@@ -23,6 +23,7 @@ from .views import (
     AdminJudgingProgressView,
     AdminExportLeaderboardCSVView,
     AdminExportRubricsCSVView,
+    CommunityVoteView,
 )
 
 urlpatterns = [
@@ -35,6 +36,7 @@ urlpatterns = [
     path('<int:pk>/my-submission/', MySubmissionView.as_view(), name='my_submission'),
     path('<int:pk>/submissions/', EventSubmissionsListView.as_view(), name='event_submissions'),
     path('<int:pk>/gallery/', PublicGalleryView.as_view(), name='event_gallery'),
+    path('<int:event_pk>/submissions/<int:sub_pk>/vote/', CommunityVoteView.as_view(), name='submission_vote'),
     path('<int:pk>/rubrics/', EventRubricsManageView.as_view(), name='event_rubrics'),
     path('<int:pk>/rubrics/<int:rubric_pk>/', EventRubricsManageView.as_view(), name='event_rubric_detail'),
     path('<int:event_pk>/submissions/<int:sub_pk>/evaluate/', SubmitProjectEvaluationView.as_view(), name='submission_evaluate'),

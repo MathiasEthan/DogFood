@@ -273,16 +273,38 @@ export default function Home() {
                           </div>
                         </div>
 
-                        <Link href={`/events/${event.id}`} className="block">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full text-xs font-mono justify-between group-hover:bg-muted/40"
-                          >
-                            <span>View Event & Teams</span>
-                            <ArrowRight className="size-3.5 group-hover:translate-x-0.5 transition-transform" />
-                          </Button>
-                        </Link>
+                        {(() => {
+                          const now = new Date()
+                          const isVotingActive = event.community_voting_start && event.community_voting_end && new Date(event.community_voting_start) <= now && now <= new Date(event.community_voting_end)
+                          
+                          if (isVotingActive) {
+                            return (
+                              <Link href={`/events/${event.id}/voting`} className="block">
+                                <Button
+                                  variant="default"
+                                  size="sm"
+                                  className="w-full text-xs font-mono justify-between bg-primary text-primary-foreground hover:bg-primary/90"
+                                >
+                                  <span>Community Voting Active - Vote Now</span>
+                                  <ArrowRight className="size-3.5 group-hover:translate-x-0.5 transition-transform" />
+                                </Button>
+                              </Link>
+                            )
+                          }
+
+                          return (
+                            <Link href={`/events/${event.id}`} className="block">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full text-xs font-mono justify-between group-hover:bg-muted/40"
+                              >
+                                <span>View Event & Teams</span>
+                                <ArrowRight className="size-3.5 group-hover:translate-x-0.5 transition-transform" />
+                              </Button>
+                            </Link>
+                          )
+                        })()}
                       </div>
                     </div>
                   </div>

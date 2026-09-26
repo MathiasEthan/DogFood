@@ -72,6 +72,8 @@ class PrizeSerializer(serializers.ModelSerializer):
 class ProjectSubmissionSerializer(serializers.ModelSerializer):
     team_name = serializers.CharField(source='team.name', read_only=True)
     submitted_by_username = serializers.CharField(source='submitted_by.username', read_only=True)
+    community_vote_count = serializers.SerializerMethodField()
+    has_voted = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectSubmission
@@ -94,10 +96,34 @@ class ProjectSubmissionSerializer(serializers.ModelSerializer):
             'submitted_by_username',
             'created_at',
             'updated_at',
+            'community_vote_count',
+            'has_voted',
         ]
         read_only_fields = ['id', 'team',
             'track',
             'submitted_by', 'created_at', 'updated_at']
+
+    def get_community_vote_count(self, obj):
+        event = obj.team.event
+        request = self.context.get('request')
+        
+        # Check if we should hide results
+        from django.utils import timezone
+        now = timezone.now()
+        is_voting_active = event.community_voting_start and event.community_voting_end and event.community_voting_start <= now <= event.community_voting_end
+        
+        is_admin_or_org = request and request.user.is_authenticated and (request.user.role in ['admin', 'organizer'] or event.created_by == request.user)
+        
+        if not event.show_community_voting_results and is_voting_active and not is_admin_or_org:
+            return None
+            
+        return obj.community_votes.count()
+
+    def get_has_voted(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.community_votes.filter(voter=request.user).exists()
+        return False
 
     def validate_github_url(self, value):
         val = value.strip()
@@ -199,6 +225,9 @@ class EventListSerializer(serializers.ModelSerializer):
             'require_demo_url',
             'require_presentation',
             'submission_guidelines',
+            'community_voting_start',
+            'community_voting_end',
+            'show_community_voting_results',
         ]
         read_only_fields = ['id', 'created_by', 'created_at']
 
@@ -245,6 +274,9 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'require_demo_url',
             'require_presentation',
             'submission_guidelines',
+            'community_voting_start',
+            'community_voting_end',
+            'show_community_voting_results',
         ]
         read_only_fields = ['id', 'created_by', 'created_at']
 
@@ -297,6 +329,9 @@ class EventCreateSerializer(serializers.ModelSerializer):
             'require_demo_url',
             'require_presentation',
             'submission_guidelines',
+            'community_voting_start',
+            'community_voting_end',
+            'show_community_voting_results',
         ]
         read_only_fields = ['id']
 

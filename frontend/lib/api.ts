@@ -80,6 +80,8 @@ export interface ProjectSubmission {
   updated_at: string
   is_draft: boolean
   track: number | null
+  community_vote_count?: number | null
+  has_voted?: boolean
 }
 
 export interface EventRubric {
@@ -181,6 +183,9 @@ export interface Event {
   require_presentation?: boolean
   submission_guidelines?: string
   event_judges?: { id: number; username: string; email: string }[]
+  community_voting_start?: string | null
+  community_voting_end?: string | null
+  show_community_voting_results?: boolean
 }
 
 export async function apiRequest<T = any>(
@@ -474,4 +479,10 @@ export const api = {
 
   getRubricsCsvUrl: (eventId: number | string) =>
     `${getApiBaseUrl()}/api/events/${eventId}/admin/export/rubrics-csv/`,
+    
+  castVote: (eventId: number | string, submissionId: number | string) =>
+    apiRequest<{ detail: string; has_voted: boolean }>(
+      `/api/events/${eventId}/submissions/${submissionId}/vote/`,
+      { method: "POST" }
+    ),
 }

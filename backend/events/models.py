@@ -47,6 +47,11 @@ class Event(models.Model):
     require_presentation = models.BooleanField(default=False)
     submission_guidelines = models.TextField(blank=True, default='')
 
+    # Community Voting
+    community_voting_start = models.DateTimeField(null=True, blank=True)
+    community_voting_end = models.DateTimeField(null=True, blank=True)
+    show_community_voting_results = models.BooleanField(default=False, help_text="If False, results are hidden during active voting")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -315,3 +320,46 @@ class EvaluationAuditLog(models.Model):
         return f"Audit [{self.action}] on {self.submission.title} by {self.judge.username if self.judge else 'Unknown'} at {self.timestamp}"
 
 
+
+class CommunityVote(models.Model):
+    submission = models.ForeignKey(ProjectSubmission, on_delete=models.CASCADE, related_name='community_votes')
+    voter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_votes')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('submission', 'voter')
+
+    def __str__(self):
+        return f"Vote by {self.voter.username} on {self.submission.title}"
+
+
+class CommunityComment(models.Model):
+    submission = models.ForeignKey(ProjectSubmission, on_delete=models.CASCADE, related_name='community_comments')
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_comments')
+    text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Comment by {self.author.username} on {self.submission.title}"
+
+
+class VoteAuditLog(models.Model):
+    class Action(models.TextChoices):
+        VOTED = 'VOTED', 'Voted'
+        UNVOTED = 'UNVOTED', 'Unvoted'
+
+    submission = models.ForeignKey(ProjectSubmission, on_delete=models.CASCADE, related_name='vote_audit_logs')
+    voter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    action = models.CharField(max_length=20, choices=Action.choices, default=Action.VOTED)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True, default='')
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return f"Audit [{self.action}] on {self.submission.title} by {self.voter.username if self.voter else 'Unknown'} at {self.timestamp}"

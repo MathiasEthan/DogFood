@@ -383,7 +383,14 @@ class PublicGalleryView(APIView):
         if track_id and track_id.isdigit():
             submissions = submissions.filter(track_id=track_id)
 
-        serializer = ProjectSubmissionSerializer(submissions.distinct(), many=True)
+        # Randomize ordering if community voting is active and user is not searching
+        is_voting_active = event.community_voting_start and event.community_voting_end and event.community_voting_start <= now <= event.community_voting_end
+        if is_voting_active and not query:
+            submissions = submissions.order_by('?')
+        else:
+            submissions = submissions.order_by('-updated_at')
+
+        serializer = ProjectSubmissionSerializer(submissions.distinct(), many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -1017,3 +1024,52 @@ class AdminExportRubricsCSVView(APIView):
         response['Content-Disposition'] = f'attachment; filename="{safe_title}_rubrics_breakdown.csv"'
         return response
 
+
+from rest_framework.throttling import UserRateThrottle
+
+class VoteThrottle(UserRateThrottle):
+    rate = '20/min'
+
+class CommunityVoteView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [VoteThrottle]
+
+    def post(self, request, event_pk, sub_pk):
+        event = get_object_or_404(Event, pk=event_pk)
+        submission = get_object_or_404(ProjectSubmission, pk=sub_pk, team__event=event)
+        
+        now = timezone.now()
+        is_voting_active = event.community_voting_start and event.community_voting_end and event.community_voting_start <= now <= event.community_voting_end
+        
+        if not is_voting_active:
+            return Response({'detail': 'Voting is not active for this event.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create or delete vote
+        from .models import CommunityVote, VoteAuditLog
+        
+        # Check if already voted
+        vote = CommunityVote.objects.filter(submission=submission, voter=request.user).first()
+        
+        ip_address = request.META.get('REMOTE_ADDR')
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
+        
+        if vote:
+            vote.delete()
+            VoteAuditLog.objects.create(
+                submission=submission,
+                voter=request.user,
+                action=VoteAuditLog.Action.UNVOTED,
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+            return Response({'detail': 'Vote removed.', 'has_voted': False}, status=status.HTTP_200_OK)
+        else:
+            CommunityVote.objects.create(submission=submission, voter=request.user)
+            VoteAuditLog.objects.create(
+                submission=submission,
+                voter=request.user,
+                action=VoteAuditLog.Action.VOTED,
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+            return Response({'detail': 'Vote cast successfully.', 'has_voted': True}, status=status.HTTP_201_CREATED)
