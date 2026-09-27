@@ -454,10 +454,24 @@ class RubricAndJudgingTests(TestCase):
             format='json',
         )
 
-        # Anonymous or authenticated user checks leaderboard
+        # Anti-anchoring: nobody but the organizer sees standings before publication
+        self.client.force_authenticate(user=None)
+        hidden = self.client.get(self.leaderboard_url)
+        self.assertEqual(hidden.status_code, status.HTTP_403_FORBIDDEN)
+        self.client.force_authenticate(user=self.judge1)
+        self.assertEqual(self.client.get(self.leaderboard_url).status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(user=self.organizer)
+        pub = self.client.post(reverse('admin_publish_results', kwargs={'pk': self.event.pk}), {'published': True}, format='json')
+        self.assertEqual(pub.status_code, status.HTTP_200_OK)
+
+        # Once published, the public sees standings with anonymized judges
         self.client.force_authenticate(user=None)
         res = self.client.get(self.leaderboard_url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+        labels = [e['judge_label'] for e in res.data[0]['evaluations']]
+        self.assertEqual(labels, ['Judge A', 'Judge B'])
+        self.assertNotIn('judge_username', res.data[0]['evaluations'][0])
         self.assertEqual(len(res.data), 1)
 
         entry = res.data[0]
@@ -569,6 +583,11 @@ class RubricAndJudgingTests(TestCase):
     def test_csv_export_endpoints(self):
         # Leaderboard CSV
         lb_url = reverse('admin_export_leaderboard_csv', kwargs={'pk': self.event.pk})
+        # Exports are organizer/admin only
+        self.assertEqual(self.client.get(lb_url).status_code, status.HTTP_401_UNAUTHORIZED)
+        self.client.force_authenticate(user=self.judge1)
+        self.assertEqual(self.client.get(lb_url).status_code, status.HTTP_403_FORBIDDEN)
+        self.client.force_authenticate(user=self.organizer)
         res_lb = self.client.get(lb_url)
         self.assertEqual(res_lb.status_code, status.HTTP_200_OK)
         self.assertIn('text/csv', res_lb['Content-Type'])

@@ -74,6 +74,9 @@ class ProjectSubmissionSerializer(serializers.ModelSerializer):
     submitted_by_username = serializers.CharField(source='submitted_by.username', read_only=True)
     community_vote_count = serializers.SerializerMethodField()
     has_voted = serializers.SerializerMethodField()
+    comment_count = serializers.SerializerMethodField()
+    track = serializers.PrimaryKeyRelatedField(queryset=Track.objects.all(), required=False, allow_null=True)
+    track_title = serializers.CharField(source='track.title', read_only=True, default=None)
 
     class Meta:
         model = ProjectSubmission
@@ -98,26 +101,27 @@ class ProjectSubmissionSerializer(serializers.ModelSerializer):
             'updated_at',
             'community_vote_count',
             'has_voted',
+            'comment_count',
+            'track_title',
         ]
-        read_only_fields = ['id', 'team',
-            'track',
-            'submitted_by', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'team', 'submitted_by', 'created_at', 'updated_at']
+
+    def validate_track(self, value):
+        event = self.context.get('event')
+        if value is not None and event is not None and value.event_id != event.id:
+            raise serializers.ValidationError("This track does not belong to this event.")
+        return value
 
     def get_community_vote_count(self, obj):
-        event = obj.team.event
+        # Hidden results: null until voting closes, unless the organizer opts in (or is viewing)
         request = self.context.get('request')
-        
-        # Check if we should hide results
-        from django.utils import timezone
-        now = timezone.now()
-        is_voting_active = event.community_voting_start and event.community_voting_end and event.community_voting_start <= now <= event.community_voting_end
-        
-        is_admin_or_org = request and request.user.is_authenticated and (request.user.role in ['admin', 'organizer'] or event.created_by == request.user)
-        
-        if not event.show_community_voting_results and is_voting_active and not is_admin_or_org:
+        user = request.user if request else None
+        if not obj.team.event.community_results_visible_to(user):
             return None
-            
-        return obj.community_votes.count()
+        return obj.community_votes.filter(is_void=False).count()
+
+    def get_comment_count(self, obj):
+        return obj.community_comments.filter(is_removed=False).count()
 
     def get_has_voted(self, obj):
         request = self.context.get('request')
@@ -228,11 +232,23 @@ class EventListSerializer(serializers.ModelSerializer):
             'community_voting_start',
             'community_voting_end',
             'show_community_voting_results',
+            'votes_per_user',
+            'voting_eligibility',
+            'allow_self_vote',
+            'comments_enabled',
+            'judges_per_project',
+            'results_published',
         ]
         read_only_fields = ['id', 'created_by', 'created_at']
 
     def get_event_judges(self, obj):
-        return [{'id': j.id, 'username': j.username, 'email': j.email} for j in obj.judges.all()]
+        # Judge emails are only shown to the event's organizer / admins
+        request = self.context.get('request')
+        show_email = bool(request and obj.is_managed_by(request.user))
+        return [
+            {'id': j.id, 'username': j.username, **({'email': j.email} if show_email else {})}
+            for j in obj.judges.all()
+        ]
 
 
 class EventDetailSerializer(serializers.ModelSerializer):
@@ -277,11 +293,23 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'community_voting_start',
             'community_voting_end',
             'show_community_voting_results',
+            'votes_per_user',
+            'voting_eligibility',
+            'allow_self_vote',
+            'comments_enabled',
+            'judges_per_project',
+            'results_published',
         ]
         read_only_fields = ['id', 'created_by', 'created_at']
 
     def get_event_judges(self, obj):
-        return [{'id': j.id, 'username': j.username, 'email': j.email} for j in obj.judges.all()]
+        # Judge emails are only shown to the event's organizer / admins
+        request = self.context.get('request')
+        show_email = bool(request and obj.is_managed_by(request.user))
+        return [
+            {'id': j.id, 'username': j.username, **({'email': j.email} if show_email else {})}
+            for j in obj.judges.all()
+        ]
 
     def get_my_team(self, obj):
         request = self.context.get('request')
@@ -294,11 +322,10 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
     def get_teams(self, obj):
         # Provide team list for organizers and admins
+        # Team list (incl. join codes) only for this event's organizer / admins
         request = self.context.get('request')
-        if request and request.user.is_authenticated and (
-            request.user.role in ['organizer', 'admin'] or obj.created_by == request.user
-        ):
-            return TeamSerializer(obj.teams.all()[:20], many=True).data
+        if request and obj.is_managed_by(request.user):
+            return TeamSerializer(obj.teams.all(), many=True).data
         return []
 
 
@@ -332,14 +359,44 @@ class EventCreateSerializer(serializers.ModelSerializer):
             'community_voting_start',
             'community_voting_end',
             'show_community_voting_results',
+            'votes_per_user',
+            'voting_eligibility',
+            'allow_self_vote',
+            'comments_enabled',
+            'judges_per_project',
+            'results_published',
         ]
         read_only_fields = ['id']
 
     def validate(self, attrs):
-        start = attrs.get('start_date')
-        end = attrs.get('end_date')
+        inst = self.instance
+        start = attrs.get('start_date', inst.start_date if inst else None)
+        end = attrs.get('end_date', inst.end_date if inst else None)
         if start and end and end <= start:
             raise serializers.ValidationError({'end_date': "End date must be after the start date."})
+
+        v_start = attrs.get('community_voting_start', inst.community_voting_start if inst else None)
+        v_end = attrs.get('community_voting_end', inst.community_voting_end if inst else None)
+        if bool(v_start) != bool(v_end):
+            raise serializers.ValidationError(
+                {'community_voting_end': "Set both the voting start and end, or neither."}
+            )
+        if v_start and v_end and v_end <= v_start:
+            raise serializers.ValidationError({'community_voting_end': "Voting must end after it starts."})
+
+        k = attrs.get('judges_per_project')
+        if k is not None and not (1 <= k <= 20):
+            raise serializers.ValidationError({'judges_per_project': "Must be between 1 and 20."})
+
+        rubrics = attrs.get('rubrics')
+        if rubrics:
+            for r in rubrics:
+                if r.get('weight', 0) < 0:
+                    raise serializers.ValidationError({'rubrics': "Rubric weights cannot be negative."})
+                if r.get('max_score', 10) < 1:
+                    raise serializers.ValidationError({'rubrics': "Rubric max score must be at least 1."})
+            if sum(r.get('weight', 0) for r in rubrics) <= 0:
+                raise serializers.ValidationError({'rubrics': "Rubric weights must add up to more than 0."})
         return attrs
 
     def create(self, validated_data):
@@ -360,6 +417,23 @@ class EventCreateSerializer(serializers.ModelSerializer):
             EventRubric.objects.create(event=event, **rubric_data)
             
         return event
+
+    @staticmethod
+    def _rubrics_changed(instance, rubrics_data):
+        current = {
+            r.id: (r.title, float(r.weight), int(r.max_score)) for r in instance.rubrics.all()
+        }
+        incoming = {}
+        for r in rubrics_data:
+            rid = r.get('id')
+            if not rid or rid not in current:
+                return True
+            incoming[rid] = (
+                r.get('title', current[rid][0]),
+                float(r.get('weight', current[rid][1])),
+                int(r.get('max_score', current[rid][2])),
+            )
+        return incoming != current
 
     def update(self, instance, validated_data):
         phases_data = validated_data.pop('phases', None)
@@ -386,6 +460,11 @@ class EventCreateSerializer(serializers.ModelSerializer):
             for prize_data in prizes_data:
                 Prize.objects.create(event=instance, **prize_data)
 
+        if rubrics_data is not None and self._rubrics_changed(instance, rubrics_data):
+            if ProjectEvaluation.objects.filter(submission__team__event=instance).exists():
+                raise serializers.ValidationError(
+                    {'rubrics': "Rubrics are locked once judging has started (evaluations exist)."}
+                )
         if rubrics_data is not None:
             existing_rubrics = {r.id: r for r in instance.rubrics.all()}
             kept_ids = []

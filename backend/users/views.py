@@ -4,6 +4,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 
@@ -70,6 +71,8 @@ def clear_auth_cookies(response: Response) -> Response:
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
 
     def post(self, request):
         serializer = UserRegistrationSerializer(data=request.data)
@@ -89,6 +92,8 @@ class RegisterView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
 
     def post(self, request):
         serializer = UserLoginSerializer(data=request.data)
@@ -142,6 +147,12 @@ class RefreshTokenView(APIView):
 
             # If token rotation is active, rotate refresh cookie as well
             if settings.SIMPLE_JWT.get('ROTATE_REFRESH_TOKENS', False):
+                # Blacklist the presented refresh token so it cannot be replayed after rotation
+                if settings.SIMPLE_JWT.get('BLACKLIST_AFTER_ROTATION', False):
+                    try:
+                        token.blacklist()
+                    except AttributeError:
+                        pass
                 token.set_jti()
                 token.set_exp()
                 refresh_expiry = int(settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())

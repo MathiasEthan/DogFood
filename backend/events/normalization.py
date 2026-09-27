@@ -24,7 +24,7 @@ class NormalizationEngine:
         Returns:
             - submission_norm_scores: {submission_id: normalized_final_score}
             - submission_raw_scores:  {submission_id: raw_arithmetic_mean}
-            - submission_std_err:     {submission_id: standard_error_of_normalized_scores}
+            - submission_std_err:     {submission_id: standard_error_of_normalized_scores, or None if k == 1}
             - judge_telemetry:        {judge_id: {'raw_mean': float, 'shrunk_mean': float, 'shrunk_std': float, 'count': int}}
         """
         if not evaluations:
@@ -126,6 +126,7 @@ class NormalizationEngine:
                 se = math.sqrt(sample_var) / math.sqrt(k)
                 submission_std_err[sub_id] = round(se, 3)
             else:
-                submission_std_err[sub_id] = 0.0
+                # A single review carries no information about disagreement: report "unknown", not 0.
+                submission_std_err[sub_id] = None
 
         return submission_norm_scores, submission_raw_scores, submission_std_err, judge_telemetry

@@ -55,7 +55,7 @@ To resolve small-sample instability ($n_j < 3$) and zero-variance degeneration (
 #### Step 1: Global Baseline Estimation
 Given all evaluations in the event $E$:
 $$\mu_0 = \frac{1}{N_{\text{total}}} \sum_{e \in E} s_e, \quad \sigma_0 = \sqrt{\frac{1}{N_{\text{total}} - 1} \sum_{e \in E} (s_e - \mu_0)^2}$$
-*(If $N_{\text{total}} < 5$, fallback to neutral constants $\mu_0 = 7.0, \sigma_0 = 1.5$.)*
+*(If $N_{\text{total}} \le 1$ or the global variance is ~0, $\sigma_0$ falls back to the neutral constant $1.5$.)*
 
 #### Step 2: Empirical Bayes Shrunk Parameters
 For each judge $j$ who completed $n_j$ evaluations, with shrinkage strength parameter $m = 3.0$:
@@ -88,7 +88,7 @@ $$\text{Standard Error } SE_i = \begin{cases}
 ## 3. Weighted & Configurable Judging Rubrics
 
 ### 3.1 Relational Architecture
-Each event defines $M$ custom rubrics ($R_1, \dots, R_M$), with percentage weights $W_k$ and maximum marks $M_k = 10$.
+Each event defines $M$ custom rubrics ($R_1, \dots, R_M$), with percentage weights $W_k \ge 0$ and per-rubric maximum marks $M_k$ (default $10$).
 
 $$\sum_{k=1}^M W_k = 100\%$$
 
@@ -97,9 +97,11 @@ If an organizer configures weights totaling $W_{\text{total}} \ne 100\%$, the sy
 $$w_k = \frac{W_k}{\sum_{l=1}^M W_l}$$
 
 ### 3.2 Evaluation Scoring Formula
-When judge $j$ rates project $i$ on rubrics $R_k$ with marks $x_{j,i,k} \in [1, 10]$:
+When judge $j$ rates project $i$ on rubrics $R_k$ with marks $x_{j,i,k} \in [1, M_k]$ (each mark is first rescaled to a /10 scale):
 
-$$\text{Raw Total Score } s_{j,i} = \sum_{k=1}^M \left( x_{j,i,k} \times w_k \right) \in [1.0, 10.0]$$
+$$\text{Raw Total Score } s_{j,i} = \sum_{k=1}^M \left( \frac{10\,x_{j,i,k}}{M_k} \times w_k \right) \in [1.0, 10.0]$$
+
+**Backend validation:** every rubric must be scored exactly once (a partial score sheet is rejected, otherwise missing rubrics would silently count as 0), marks outside $[1, M_k]$ are rejected, and rubrics become **read-only once the first evaluation exists** so weights cannot be changed mid-round.
 
 This raw weighted score preserves the relative importance assigned to criteria (e.g. $40\%$ Innovation vs $30\%$ Technical Depth vs $30\%$ Presentation) prior to cross-judge normalization.
 
@@ -114,7 +116,7 @@ Target:
 2. **Workload Capping:** No judge receives more than $C_{\max} = \lceil \frac{N \cdot K}{M} \rceil + 1$ projects.
 3. **Strict Conflict of Interest (COI) Invariant:**
    $$\forall (j, p), \quad j \notin \text{TeamMembers}(p) \land j \ne \text{Author}(p)$$
-4. **Track Affinity:** Match judges to projects aligned with their domain expertise where feasible.
+4. **No Track Affinity (deliberate):** Z-score normalization (§2) assumes each judge sees a roughly random slice of the field. Routing judges to tracks would make a judge who drew a strong track look "harsh" and one who drew a weak track look "lenient", so normalization would penalize the wrong teams. We therefore keep assignment track-blind and randomized; per-track standings can still be read from the leaderboard.
 
 ### 4.2 Minimum-Degree Bipartite Allocation Algorithm
 
@@ -134,19 +136,23 @@ Output: Assignment Pairs (judge_id, submission_id)
                                  j not in Assigned[p] and 
                                  Workload[j] < C_max }
        If ViableJudges is empty:
-         Raise FeasibilityDeficitError("Insufficient conflict-free judges")
+         Relax the workload cap (COI is never relaxed)
+         If still empty: record DEFICIT(p) and stop filling p
        
        Rank ViableJudges by:
-         1. TrackMatch(j, p) [0 for match, 1 otherwise]
-         2. Workload[j] ascending (load balancing)
-         3. Random tie-breaker (avoid deterministic bias)
+         1. Workload[j] ascending (load balancing)
+         2. Random tie-breaker (avoid deterministic bias)
        
        Select best judge j*
        Assigned[p].add(j*)
        Workload[j*] += 1
 
-6. Return pairs (j, p) for all p in P, j in Assigned[p]
+6. Return pairs (j, p) for all p in P, j in Assigned[p], plus the DEFICIT list
 ```
+
+Completed reviews are never reshuffled: re-running assignment keeps `COMPLETED` pairs and only redistributes `PENDING` ones. The API response includes `fully_saturated`, `deficits` and `max_workload`, and the chosen $K$ is stored on the event (`judges_per_project`) so the progress dashboard measures saturation against it.
+
+**Known limitation:** the greedy pass processes the most-constrained projects first, which works well in practice, but it is not guaranteed to find a complete assignment in every case where one exists. A max-flow formulation would give that guarantee; when the greedy pass falls short, it reports the deficit explicitly rather than failing silently.
 
 ---
 
@@ -157,18 +163,22 @@ Output: Assignment Pairs (judge_id, submission_id)
 | Capability | Anonymous | Participant | Judge | Organizer | Admin / Superuser |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Browse Public Gallery** | Yes | Yes | Yes | Yes | Yes |
-| **Submit Evaluation** | Blocked (401) | Blocked (403) | Assigned Projects Only | Blocked/Assigned | All Projects |
-| **Evaluate Own Project (COI)** | Blocked (403) | Blocked (403) | **Strictly Blocked (403)** | Blocked (403) | Blocked (403) |
-| **View Unassigned Projects for Grading** | Blocked (403) | Blocked (403) | Blocked (403) | View Only | Full Access |
-| **View Leaderboard During Round** | **Hidden (403)** | **Hidden (403)** | **Hidden (403)** | View Only | Full Access |
-| **View Leaderboard After Publish** | Yes (Published) | Yes (Published) | Yes (Published) | Yes | Yes |
-| **Configure Rubrics** | Blocked (403) | Blocked (403) | Blocked (403) | Yes | Yes |
-| **Trigger Batch Assignment** | Blocked (403) | Blocked (403) | Blocked (403) | Yes | Yes |
-| **Export Audit CSVs** | Blocked (403) | Blocked (403) | Blocked (403) | Yes | Yes |
+| **Submit Evaluation** | Blocked (401) | Blocked (403) | Judges of *this* event; once assignments exist, **assigned projects only** | Blocked (403) unless also appointed judge | All projects (except COI) |
+| **Evaluate Own Project (COI)** | Blocked (401) | Blocked (403) | **Strictly Blocked (403)** | Blocked (403) | Blocked (403) |
+| **Evaluate Drafts / after Publish** | — | — | Blocked (400) | Blocked (400) | Blocked (400) |
+| **Submissions Roster** | Blocked (401) | Blocked (403) | Own event only, drafts hidden | Own event only | All |
+| **View Leaderboard Before Publish** | **Hidden (403)** | **Hidden (403)** | **Hidden (403)** | Own event only | Full Access |
+| **View Leaderboard After Publish** | Yes, judges anonymized | Yes, judges anonymized | Yes, judges anonymized | Full detail (own event) | Full detail |
+| **Configure Rubrics / Assign / Publish** | Blocked (401) | Blocked (403) | Blocked (403) | Own event only | Yes |
+| **Export CSVs** | Blocked (401) | Blocked (403) | Blocked (403) | Own event only | Yes |
+| **Join a team in the event** | — | Yes | **Blocked (403) if judging it** | — | — |
+
+"Organizer" permissions always mean *organizer of this event* (`event.created_by`). Holding the organizer role is never enough to see or change another organizer's event. Judge emails and team join codes are only returned to that event's organizer and admins.
 
 ### 5.2 Blind Judging & Anchoring Prevention
 - **Anti-Anchoring Guard:** During active judging, the leaderboard and current aggregate standings are strictly inaccessible via the API. Judges cannot see what scores other judges have submitted for any project.
-- **Double-Blind Review:** In blind evaluation mode, participant names, usernames, and avatars are stripped from the evaluation payload, presenting only project title, problem statement, technical architecture, and demonstration links.
+- **Publication gate:** the organizer publishes results explicitly (`POST /api/events/<id>/admin/publish-results/`). Publishing also **locks scoring**, so no judge can adjust marks after seeing the standings.
+- **Blind review (limitation):** judges currently see team names. Full double-blind review is not implemented, and it could not be airtight anyway because repository URLs and demos usually identify the team.
 - **Feedback Anonymization:** Post-hackathon qualitative feedback presented to participants is attributed to generic tags (e.g. `Judge A`, `Judge B`) rather than usernames to protect judges from post-event harassment.
 
 ---
@@ -181,8 +191,9 @@ Rather than destructively overwriting previous marks, all evaluation mutations g
 - **Foreign Keys:** `submission_id`, `judge_id`, `event_id`
 - **Scores Snapshot:** Complete JSON array of raw per-rubric scores
 - **Score Delta:** Difference in weighted score relative to prior submission
-- **Forensic Metadata:** Client IP address, User-Agent, Session Token
-- **Dwell Time:** Seconds elapsed between viewing project details and submitting score
+- **Forensic Metadata:** Client IP address and User-Agent. Session tokens are deliberately **never** stored, because an audit log readable by organizers must not contain credentials.
+- **Dwell Time:** Seconds between the judge first opening the assigned project (recorded **server-side** on `JudgeAssignment.opened_at`) and submitting the score. The client never reports this number, so it cannot be faked.
+- **Flags:** `LOO_OUTLIER`, `RAPID_SUBMISSION`
 - **Timestamp:** High-resolution ISO-8601 UTC timestamp
 
 ### 6.2 Anomaly & Abuse Detection Heuristics
@@ -192,9 +203,11 @@ The engine executes three real-time anomaly detection heuristics:
    $$\Delta_{\text{LOO}} = \left| s_{j,i} - \frac{1}{|J_i| - 1} \sum_{k \in J_i \setminus \{j\}} s_{k,i} \right|$$
    If $\Delta_{\text{LOO}} \ge 3.0$ on a $10$-point scale, the evaluation is automatically flagged for organizer audit.
 2. **Speed-Running / Bot Heuristic:**
-   If $\text{DwellTime} < 45$ seconds for a submission containing a repository link and demo video, the record is flagged as `RAPID_SUBMISSION`.
+   If a judge's *first* evaluation of an assigned project arrives $< 45$ seconds after they first opened it, the record is flagged `RAPID_SUBMISSION`.
 3. **Variance Flatlining:**
-   If a judge completes $\ge 5$ evaluations with variance $\text{Var}(S_j) < 0.05$ (e.g. assigning straight $10$s or $5$s), the system alerts the organizer of uncalibrated evaluation.
+   If a judge completes $\ge 5$ evaluations with variance $\text{Var}(S_j) < 0.05$ (e.g. assigning straight $10$s or $5$s), the progress dashboard sets `flatline_warning` for that judge.
+
+Community-voting abuse (duplicate votes, sock puppets, rate limits) is covered by T3. See [COMMUNITY.md](COMMUNITY.md).
 
 ---
 
@@ -210,23 +223,33 @@ Organizers maintain real-time oversight via `/api/events/<id>/admin/judging-prog
   - Statistical profile ($\mu_j$, $\sigma_j$) identifying harsh/lenient calibration.
 - **Project Matrix:**
   - Saturation status: `SATISFIED` ($\ge K$), `IN_PROGRESS`, or `DEFICIT`.
-  - Raw mean vs. Normalized score with Standard Error ($SE$).
+  - Raw mean vs. Normalized score with Standard Error ($SE$). With a single review the SE is reported as `null` ("unknown"), not $0$, because one score says nothing about agreement.
 
 ---
 
 ## 8. Audit-Ready CSV Export Throughout Workflow
 
-The platform provides three automated, high-performance streaming CSV export endpoints:
+Every stage of the workflow has an organizer-only streaming CSV export (`401` anonymous, `403` for anyone who is not this event's organizer or an admin):
+
+| Stage | Endpoint |
+| :--- | :--- |
+| Submission (before judging) | `/api/events/<id>/admin/export/submissions-csv/` |
+| Assignment (during judging) | `/api/events/<id>/admin/export/assignments-csv/` |
+| Scoring (during judging) | `/api/events/<id>/admin/export/rubric-breakdown-csv/` (alias `rubrics-csv/`), `/feedback-csv/`, `/evaluation-audit-csv/` |
+| Results | `/api/events/<id>/admin/export/leaderboard-csv/` |
+| Community (T3) | `/api/events/<id>/admin/export/community-votes-csv/`, `/community-audit-csv/` |
+
+Column layouts of the three core exports:
 
 1. **Official Leaderboard Export (`/api/events/<id>/admin/export/leaderboard-csv/`):**
    - Columns: `Rank, Submission ID, Project Title, Team Name, Track, Raw Score, Normalized Score, Standard Error, Completed Reviews, Outliers Flagged`
 2. **Rubric Breakdown Export (`/api/events/<id>/admin/export/rubric-breakdown-csv/`):**
-   - Columns: `Submission ID, Project Title, Team Name, Judge Identifier, Rubric Name, Weight %, Raw Score, Weighted Contribution, Timestamp`
+   - Columns: `Submission ID, Project Title, Team Name, Judge Identifier, Rubric Name, Weight %, Raw Score, Weighted Contribution, Evaluation Total, Timestamp`
 3. **Qualitative Feedback Export (`/api/events/<id>/admin/export/feedback-csv/`):**
-   - Columns: `Submission ID, Project Title, Team Name, Judge Identifier, Feedback Notes, Submitted At`
+   - Columns: `Submission ID, Project Title, Team Name, Judge Identifier, Weighted Score, Feedback Notes, Submitted At`
 
 ---
 
 ## 9. Conclusion & Defensibility Summary
 
-By combining **Empirical Bayes regularized Z-score normalization**, **constrained bipartite assignment**, **strict anti-COI role isolation**, and **immutable audit logging**, DogFood delivers an enterprise-grade hackathon judging engine. The system is mathematically immune to judge severity bias, structurally protected against anchoring and collusion, and fully auditable from first submission to final awards presentation.
+By combining **Empirical Bayes regularized Z-score normalization**, **constrained bipartite assignment**, **strict anti-COI role isolation**, and **immutable audit logging**, DogFood provides a defensible hackathon judging engine. The system corrects for judge severity and spread, hides standings until an explicit publish step (which also locks scoring), enforces conflict-of-interest and assignment rules on the server, and keeps an audit trail from first submission to final results. Every rule above is covered by the backend test suite (`events/tests.py`, `events/test_isolation.py`).

@@ -80,8 +80,10 @@ export interface ProjectSubmission {
   updated_at: string
   is_draft: boolean
   track: number | null
+  track_title?: string | null
   community_vote_count?: number | null
   has_voted?: boolean
+  comment_count?: number
 }
 
 export interface EventRubric {
@@ -114,7 +116,17 @@ export interface ProjectEvaluation {
   updated_at: string
 }
 
+export interface AnonymizedEvaluation {
+  judge_label: string
+  total_score: number
+  feedback: string
+  scores: EvaluationScoreItem[]
+}
+
 export interface LeaderboardEntry {
+  rank?: number
+  track_title?: string | null
+  outliers_flagged?: number
   submission_id: number
   submission_title: string
   team_name: string
@@ -125,16 +137,20 @@ export interface LeaderboardEntry {
   raw_score?: number | null
   standard_error?: number | null
   evaluations_count: number
-  evaluations: ProjectEvaluation[]
+  evaluations: Array<ProjectEvaluation | AnonymizedEvaluation>
 }
 
 export interface JudgingProgressSummary {
   total_submissions: number
   total_judges: number
+  target_reviews_per_project?: number
   total_assignments: number
   completed_assignments: number
   overall_progress_percent: number
+  saturation_percent?: number
   under_reviewed_count: number
+  flagged_evaluations?: number
+  results_published?: boolean
 }
 
 export interface JudgeProgressItem {
@@ -143,11 +159,32 @@ export interface JudgeProgressItem {
   assigned: number
   completed: number
   progress_percent: number
+  avg_review_seconds?: number | null
+  raw_mean?: number | null
+  shrunk_mean?: number | null
+  shrunk_std?: number | null
+  score_variance?: number | null
+  flatline_warning?: boolean
+}
+
+export interface ProjectProgressItem {
+  submission_id: number
+  title: string
+  team_name: string
+  assigned_judges: number
+  reviews_completed: number
+  target_reviews: number
+  saturation: "SATISFIED" | "IN_PROGRESS" | "DEFICIT"
+  raw_score: number | null
+  normalized_score: number | null
+  standard_error: number | null
+  outliers_flagged: number
 }
 
 export interface JudgingProgressResponse {
   summary: JudgingProgressSummary
   judges: JudgeProgressItem[]
+  projects?: ProjectProgressItem[]
   under_reviewed_submissions: Array<{
     submission_id: number
     title: string
@@ -182,10 +219,129 @@ export interface Event {
   require_demo_url?: boolean
   require_presentation?: boolean
   submission_guidelines?: string
-  event_judges?: { id: number; username: string; email: string }[]
+  event_judges?: { id: number; username: string; email?: string }[]
   community_voting_start?: string | null
   community_voting_end?: string | null
   show_community_voting_results?: boolean
+  votes_per_user?: number
+  voting_eligibility?: "any" | "registered"
+  allow_self_vote?: boolean
+  comments_enabled?: boolean
+  judges_per_project?: number
+  results_published?: boolean
+}
+
+export interface VotingStatus {
+  event_id: number
+  is_active: boolean
+  has_ended: boolean
+  voting_start: string | null
+  voting_end: string | null
+  votes_per_user: number
+  voting_eligibility: "any" | "registered"
+  allow_self_vote: boolean
+  comments_enabled: boolean
+  results_visible: boolean
+  eligible: boolean
+  ineligible_reason: string | null
+  votes_used: number
+  votes_remaining: number | null
+  voted_submission_ids: number[]
+  own_submission_id: number | null
+}
+
+export interface VoteResponse {
+  detail: string
+  has_voted: boolean
+  votes_used: number
+  votes_remaining: number | null
+}
+
+export interface CommunityResultRow {
+  rank: number
+  submission_id: number
+  submission_title: string
+  team_name: string
+  track: string | null
+  votes: number
+}
+
+export interface CommunityResults {
+  event_id: number
+  voting_closed: boolean
+  total_votes: number
+  results: CommunityResultRow[]
+}
+
+export interface CommunityComment {
+  id: number
+  submission: number
+  author: number
+  author_username: string
+  text: string
+  created_at: string
+  updated_at: string
+  is_edited: boolean
+  can_edit: boolean
+  can_remove: boolean
+}
+
+export interface CommunityAuditEntry {
+  id: number
+  timestamp: string
+  action: string
+  submission_id: number | null
+  submission_title: string | null
+  user_id: number | null
+  username: string | null
+  flagged: boolean
+  metadata: Record<string, any>
+  ip_address: string | null
+  entry_hash: string
+  prev_hash: string
+}
+
+export interface CommunityVoteRecord {
+  id: number
+  submission_id: number
+  submission_title: string
+  voter_id: number
+  voter_username: string
+  ip_address: string | null
+  flags: string[]
+  is_void: boolean
+  void_reason: string
+  created_at: string
+}
+
+export class ApiError extends Error {
+  status: number
+  data: any
+  constructor(message: string, status: number, data: any) {
+    super(message)
+    this.name = "ApiError"
+    this.status = status
+    this.data = data
+  }
+}
+
+// Paths that must never trigger an automatic token refresh + retry
+const NO_REFRESH_PATHS = ["/api/auth/login/", "/api/auth/register/", "/api/auth/refresh/", "/api/auth/logout/"]
+let refreshInFlight: Promise<boolean> | null = null
+
+async function tryRefreshSession(baseUrl: string): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(`${baseUrl}/api/auth/refresh/`, {
+      method: "POST",
+      credentials: "include",
+    })
+      .then((r) => r.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshInFlight = null
+      })
+  }
+  return refreshInFlight
 }
 
 export async function apiRequest<T = any>(
@@ -202,11 +358,26 @@ export async function apiRequest<T = any>(
     ...(options.headers as Record<string, string>),
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-    credentials: "include", // Essential for HttpOnly cookie transfer
-  })
+  const doFetch = () =>
+    fetch(url, {
+      ...options,
+      headers,
+      credentials: "include", // Essential for HttpOnly cookie transfer
+    })
+
+  let response = await doFetch()
+
+  // Access tokens expire after ~60 min: silently rotate via the refresh cookie once, then retry
+  if (
+    response.status === 401 &&
+    typeof window !== "undefined" &&
+    !NO_REFRESH_PATHS.some((p) => endpoint.startsWith(p))
+  ) {
+    const refreshed = await tryRefreshSession(baseUrl)
+    if (refreshed) {
+      response = await doFetch()
+    }
+  }
 
   let data: any
   try {
@@ -224,7 +395,7 @@ export async function apiRequest<T = any>(
             .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
             .join("; ")
         : `Request failed with status ${response.status}`)
-    throw new Error(errorMessage)
+    throw new ApiError(errorMessage, response.status, data)
   }
 
   return data as T
@@ -466,6 +637,9 @@ export const api = {
       target_k: number
       total_assignments_created: number
       workload_distribution: Record<string, number>
+      fully_saturated?: boolean
+      deficits?: { submission_id: number; title: string; assigned: number; target: number }[]
+      warning?: string | null
     }>(`/api/events/${eventId}/admin/assign-judges/`, {
       method: "POST",
       body: JSON.stringify({ k_per_project: k }),
@@ -480,9 +654,85 @@ export const api = {
   getRubricsCsvUrl: (eventId: number | string) =>
     `${getApiBaseUrl()}/api/events/${eventId}/admin/export/rubrics-csv/`,
     
+  getFeedbackCsvUrl: (eventId: number | string) =>
+    `${getApiBaseUrl()}/api/events/${eventId}/admin/export/feedback-csv/`,
+
+  getSubmissionsCsvUrl: (eventId: number | string) =>
+    `${getApiBaseUrl()}/api/events/${eventId}/admin/export/submissions-csv/`,
+
+  getAssignmentsCsvUrl: (eventId: number | string) =>
+    `${getApiBaseUrl()}/api/events/${eventId}/admin/export/assignments-csv/`,
+
+  getEvaluationAuditCsvUrl: (eventId: number | string) =>
+    `${getApiBaseUrl()}/api/events/${eventId}/admin/export/evaluation-audit-csv/`,
+
+  publishResults: (eventId: number | string, published: boolean) =>
+    apiRequest<{ results_published: boolean }>(`/api/events/${eventId}/admin/publish-results/`, {
+      method: "POST",
+      body: JSON.stringify({ published }),
+    }),
+
+  // T3 - Community voting
+  getVotingStatus: (eventId: number | string) =>
+    apiRequest<VotingStatus>(`/api/events/${eventId}/voting/`),
+
   castVote: (eventId: number | string, submissionId: number | string) =>
-    apiRequest<{ detail: string; has_voted: boolean }>(
-      `/api/events/${eventId}/submissions/${submissionId}/vote/`,
-      { method: "POST" }
+    apiRequest<VoteResponse>(`/api/events/${eventId}/submissions/${submissionId}/vote/`, {
+      method: "POST",
+    }),
+
+  withdrawVote: (eventId: number | string, submissionId: number | string) =>
+    apiRequest<VoteResponse>(`/api/events/${eventId}/submissions/${submissionId}/vote/`, {
+      method: "DELETE",
+    }),
+
+  getCommunityResults: (eventId: number | string) =>
+    apiRequest<CommunityResults>(`/api/events/${eventId}/community-results/`),
+
+  listComments: (eventId: number | string, submissionId: number | string) =>
+    apiRequest<CommunityComment[]>(`/api/events/${eventId}/submissions/${submissionId}/comments/`),
+
+  postComment: (eventId: number | string, submissionId: number | string, text: string) =>
+    apiRequest<CommunityComment>(`/api/events/${eventId}/submissions/${submissionId}/comments/`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+
+  editComment: (eventId: number | string, commentId: number, text: string) =>
+    apiRequest<CommunityComment>(`/api/events/${eventId}/comments/${commentId}/`, {
+      method: "PATCH",
+      body: JSON.stringify({ text }),
+    }),
+
+  deleteComment: (eventId: number | string, commentId: number) =>
+    apiRequest<{ detail: string }>(`/api/events/${eventId}/comments/${commentId}/`, {
+      method: "DELETE",
+    }),
+
+  getCommunityAudit: (eventId: number | string, params?: { flagged?: boolean }) =>
+    apiRequest<CommunityAuditEntry[]>(
+      `/api/events/${eventId}/admin/community-audit/${params?.flagged ? "?flagged=1" : ""}`
     ),
+
+  verifyCommunityAudit: (eventId: number | string) =>
+    apiRequest<{ valid: boolean; entries_checked: number; head_hash?: string; first_invalid_entry_id?: number }>(
+      `/api/events/${eventId}/admin/community-audit/verify/`
+    ),
+
+  listCommunityVotes: (eventId: number | string, params?: { flagged?: boolean }) =>
+    apiRequest<CommunityVoteRecord[]>(
+      `/api/events/${eventId}/admin/community-votes/${params?.flagged ? "?flagged=1" : ""}`
+    ),
+
+  voidCommunityVote: (eventId: number | string, voteId: number, reason: string) =>
+    apiRequest<{ detail: string }>(`/api/events/${eventId}/admin/community-votes/${voteId}/void/`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+
+  getCommunityVotesCsvUrl: (eventId: number | string) =>
+    `${getApiBaseUrl()}/api/events/${eventId}/admin/export/community-votes-csv/`,
+
+  getCommunityAuditCsvUrl: (eventId: number | string) =>
+    `${getApiBaseUrl()}/api/events/${eventId}/admin/export/community-audit-csv/`,
 }

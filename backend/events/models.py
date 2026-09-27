@@ -1,6 +1,9 @@
+import hashlib
+import json
 import secrets
 import string
 from django.conf import settings
+from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.db import models
 
@@ -47,10 +50,41 @@ class Event(models.Model):
     require_presentation = models.BooleanField(default=False)
     submission_guidelines = models.TextField(blank=True, default='')
 
-    # Community Voting
+    # Community Voting (T3)
+    class VotingEligibility(models.TextChoices):
+        ANY_USER = 'any', 'Any signed-in user'
+        REGISTERED = 'registered', 'Only users registered on a team in this event'
+
     community_voting_start = models.DateTimeField(null=True, blank=True)
     community_voting_end = models.DateTimeField(null=True, blank=True)
-    show_community_voting_results = models.BooleanField(default=False, help_text="If False, results are hidden during active voting")
+    show_community_voting_results = models.BooleanField(
+        default=False,
+        help_text="If False, vote counts are hidden from the public until voting closes",
+    )
+    votes_per_user = models.PositiveIntegerField(
+        default=3,
+        help_text="Maximum community votes a single user may cast in this event (0 = unlimited)",
+    )
+    voting_eligibility = models.CharField(
+        max_length=20,
+        choices=VotingEligibility.choices,
+        default=VotingEligibility.ANY_USER,
+    )
+    allow_self_vote = models.BooleanField(
+        default=False,
+        help_text="If False, team members cannot vote for their own team's project",
+    )
+    comments_enabled = models.BooleanField(default=True)
+
+    # Judging (T2)
+    judges_per_project = models.PositiveIntegerField(
+        default=3,
+        help_text="Target number of judge reviews per project (K)",
+    )
+    results_published = models.BooleanField(
+        default=False,
+        help_text="Judging leaderboard is hidden from everyone but the organizer until published",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -61,6 +95,38 @@ class Event(models.Model):
     @property
     def teams_count(self):
         return self.teams.count()
+
+    @property
+    def is_voting_active(self):
+        now = timezone.now()
+        return bool(
+            self.community_voting_start
+            and self.community_voting_end
+            and self.community_voting_start <= now <= self.community_voting_end
+        )
+
+    @property
+    def has_voting_ended(self):
+        return bool(self.community_voting_end and timezone.now() > self.community_voting_end)
+
+    def is_managed_by(self, user):
+        """Organizer of THIS event or a platform admin. Role alone is never enough."""
+        if not user or not user.is_authenticated:
+            return False
+        return user.is_superuser or user.role == 'admin' or self.created_by_id == user.id
+
+    def is_judge(self, user):
+        if not user or not user.is_authenticated:
+            return False
+        return self.judges.filter(pk=user.pk).exists()
+
+    def community_results_visible_to(self, user):
+        if self.is_managed_by(user):
+            return True
+        if self.show_community_voting_results:
+            return True
+        # Hidden before and during voting; revealed once the window closes
+        return self.has_voting_ended
 
     def __str__(self):
         return self.title
@@ -270,6 +336,7 @@ class JudgeAssignment(models.Model):
     submission = models.ForeignKey(ProjectSubmission, on_delete=models.CASCADE, related_name='assigned_judges')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     assigned_at = models.DateTimeField(auto_now_add=True)
+    opened_at = models.DateTimeField(null=True, blank=True, help_text="First time the judge opened this project (server clock)")
     completed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -311,6 +378,8 @@ class EvaluationAuditLog(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True, default='')
     is_outlier = models.BooleanField(default=False, help_text="Flagged if score diverges > 3.0 pts from consensus")
+    dwell_seconds = models.FloatField(null=True, blank=True, help_text="Seconds between first opening the project and scoring it")
+    flags = models.JSONField(default=list, blank=True, help_text="e.g. LOO_OUTLIER, RAPID_SUBMISSION")
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -324,10 +393,16 @@ class EvaluationAuditLog(models.Model):
 class CommunityVote(models.Model):
     submission = models.ForeignKey(ProjectSubmission, on_delete=models.CASCADE, related_name='community_votes')
     voter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_votes')
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    flags = models.JSONField(default=list, blank=True, help_text="Abuse heuristics raised when the vote was cast")
+    is_void = models.BooleanField(default=False, help_text="Voided by an organizer; excluded from tallies")
+    void_reason = models.CharField(max_length=255, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        # Duplicate detection at the database level: one vote per user per project
         unique_together = ('submission', 'voter')
+        ordering = ['-created_at']
 
     def __str__(self):
         return f"Vote by {self.voter.username} on {self.submission.title}"
@@ -337,7 +412,16 @@ class CommunityComment(models.Model):
     submission = models.ForeignKey(ProjectSubmission, on_delete=models.CASCADE, related_name='community_comments')
     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_comments')
     text = models.TextField()
+    is_removed = models.BooleanField(default=False)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='removed_comments',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -346,20 +430,87 @@ class CommunityComment(models.Model):
         return f"Comment by {self.author.username} on {self.submission.title}"
 
 
+class ImmutableAuditError(Exception):
+    pass
+
+
 class VoteAuditLog(models.Model):
+    """
+    Append-only, hash-chained audit trail for all community (T3) actions.
+
+    Every entry stores sha256(prev_hash + canonical payload). Rewriting or deleting any
+    historic row breaks every later hash in the same event's chain, which
+    CommunityAuditVerifyView detects.
+    """
+
     class Action(models.TextChoices):
         VOTED = 'VOTED', 'Voted'
-        UNVOTED = 'UNVOTED', 'Unvoted'
+        UNVOTED = 'UNVOTED', 'Vote removed'
+        VOTE_REJECTED = 'VOTE_REJECTED', 'Vote rejected'
+        VOTE_VOIDED = 'VOTE_VOIDED', 'Vote voided by organizer'
+        COMMENTED = 'COMMENTED', 'Comment posted'
+        COMMENT_EDITED = 'COMMENT_EDITED', 'Comment edited'
+        COMMENT_REMOVED = 'COMMENT_REMOVED', 'Comment removed'
+        COMMENT_REJECTED = 'COMMENT_REJECTED', 'Comment rejected'
+        SETTINGS_CHANGED = 'SETTINGS_CHANGED', 'Voting settings changed'
 
-    submission = models.ForeignKey(ProjectSubmission, on_delete=models.CASCADE, related_name='vote_audit_logs')
+    event = models.ForeignKey(
+        Event, on_delete=models.CASCADE, related_name='community_audit_logs', null=True, blank=True
+    )
+    submission = models.ForeignKey(
+        ProjectSubmission, on_delete=models.SET_NULL, related_name='vote_audit_logs', null=True, blank=True
+    )
     voter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     action = models.CharField(max_length=20, choices=Action.choices, default=Action.VOTED)
+    metadata = models.JSONField(default=dict, blank=True)
+    flagged = models.BooleanField(default=False, db_index=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True, default='')
-    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    prev_hash = models.CharField(max_length=64, blank=True, default='')
+    entry_hash = models.CharField(max_length=64, blank=True, default='')
+    timestamp = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
-        ordering = ['-timestamp']
+        ordering = ['-timestamp', '-id']
+
+    def canonical_payload(self):
+        return json.dumps(
+            {
+                'event': self.event_id,
+                'submission': self.submission_id,
+                'voter': self.voter_id,
+                'action': self.action,
+                'metadata': self.metadata,
+                'flagged': self.flagged,
+                'ip': self.ip_address,
+                'timestamp': self.timestamp.isoformat(),
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+            default=str,
+        )
+
+    def compute_hash(self):
+        return hashlib.sha256((self.prev_hash + self.canonical_payload()).encode('utf-8')).hexdigest()
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ImmutableAuditError('Audit log entries are append-only and cannot be modified.')
+        if self.event_id is None and self.submission_id is not None:
+            self.event_id = self.submission.team.event_id
+        last = (
+            VoteAuditLog.objects.filter(event_id=self.event_id)
+            .order_by('-id')
+            .values_list('entry_hash', flat=True)
+            .first()
+        )
+        self.prev_hash = last or ''
+        self.entry_hash = self.compute_hash()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ImmutableAuditError('Audit log entries are append-only and cannot be deleted.')
 
     def __str__(self):
-        return f"Audit [{self.action}] on {self.submission.title} by {self.voter.username if self.voter else 'Unknown'} at {self.timestamp}"
+        who = self.voter.username if self.voter else 'Unknown'
+        return f"Audit [{self.action}] by {who} at {self.timestamp}"

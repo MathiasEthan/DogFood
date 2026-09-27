@@ -19,6 +19,9 @@ python manage.py makemigrations users --noinput
 echo "==> Applying database migrations..."
 python manage.py migrate --noinput
 
+echo "==> Ensuring cache table (used by API rate limiting) exists..."
+python manage.py createcachetable
+
 # Auto-create superuser if credentials provided
 if [ -n "$DJANGO_SUPERUSER_USERNAME" ] && [ -n "$DJANGO_SUPERUSER_PASSWORD" ]; then
   echo "==> Ensuring admin superuser exists..."

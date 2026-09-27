@@ -34,6 +34,7 @@ Run both services directly on your host machine for instant Fast Refresh and cod
    python3 -m venv venv && source venv/bin/activate
    pip install -r requirements.txt
    python manage.py migrate
+   python manage.py createcachetable   # rate-limit counters live in the DB cache
    python manage.py runserver 8000
    ```
    *(Note: Django automatically falls back to local SQLite if PostgreSQL is not running).*
@@ -107,7 +108,37 @@ On initial startup, `backend/entrypoint.sh` automatically seeds the default admi
 |---|---|---|---|
 | `/api/events/<id>/my-submission/` | GET | Authenticated (Team Member) | Retrieve team's project submission. |
 | `/api/events/<id>/submit/` | POST | Authenticated (Team Leader) | Create or update project submission before event deadline (multipart form). |
-| `/api/events/<id>/submissions/` | GET | Organizer / Judge / Admin | List all project submissions for evaluation and scoring. |
+| `/api/events/<id>/submissions/` | GET | This event's organizer / judges / admin | Submissions roster (judges never see drafts). |
+| `/api/events/<id>/gallery/?q=&track=` | GET | Public | Searchable gallery of non-draft projects. Randomized per viewer while voting is open (`X-Gallery-Ordering` header). |
+
+### Judging (T2) — see [JUDGING.md](JUDGING.md)
+"Organizer" below always means the organizer **of that event** (or a platform admin).
+
+| Endpoint | Method | Permission | Description |
+|---|---|---|---|
+| `/api/events/<id>/rubrics/` | GET / POST | Public / Organizer | Weighted rubrics (locked once evaluations exist). |
+| `/api/events/<id>/submissions/<sid>/evaluate/` | GET / POST | Event judge (assigned) | Score every rubric; COI, drafts and published results are rejected. GET starts the server-side dwell clock. |
+| `/api/events/<id>/admin/assign-judges/` | POST | Organizer | COI-free, load-balanced assignment `{k_per_project}`; reports `deficits`. |
+| `/api/events/<id>/admin/judging-progress/` | GET | Organizer | Judge telemetry (μ, σ, flatline), project saturation matrix. |
+| `/api/events/<id>/leaderboard/` | GET | Organizer; everyone after publish | Empirical-Bayes normalized standings; public view anonymizes judges. |
+| `/api/events/<id>/admin/publish-results/` | POST | Organizer | `{published: true/false}`; publishing locks scoring. |
+| `/api/events/<id>/admin/export/{submissions,assignments,rubric-breakdown,feedback,evaluation-audit,leaderboard}-csv/` | GET | Organizer | Streaming CSV exports for every stage. |
+
+### Community (T3) — see [COMMUNITY.md](COMMUNITY.md)
+| Endpoint | Method | Permission | Description |
+|---|---|---|---|
+| `/api/events/<id>/voting/` | GET | Public | Voting window, rules, and the caller's quota / ballot / eligibility. |
+| `/api/events/<id>/submissions/<sid>/vote/` | POST / DELETE | Authenticated, eligible | Cast (`201`, `409` duplicate) or withdraw a vote while voting is open. Rate limited. |
+| `/api/events/<id>/community-results/` | GET | Public after voting closes | Vote ranking; `403 results_hidden` during voting unless the organizer opts in. |
+| `/api/events/<id>/submissions/<sid>/comments/` | GET / POST | Public / Authenticated | Comments (duplicate + rate limited). |
+| `/api/events/<id>/comments/<cid>/` | PATCH / DELETE | Author / author or organizer | Edit own; remove own or moderate. |
+| `/api/events/<id>/admin/community-votes/?flagged=1` | GET | Organizer | Individual votes with abuse flags. |
+| `/api/events/<id>/admin/community-votes/<vid>/void/` | POST | Organizer | Void a vote with a reason (excluded from tallies). |
+| `/api/events/<id>/admin/community-audit/` | GET | Organizer | Hash-chained audit trail (`?flagged=1`, `?action=`). |
+| `/api/events/<id>/admin/community-audit/verify/` | GET | Organizer | Recompute the hash chain; reports the first tampered entry. |
+| `/api/events/<id>/admin/export/{community-votes,community-audit}-csv/` | GET | Organizer | CSV exports. |
+
+Voting rules (window, votes per user, eligibility, self-voting, live counts, comments) are set with `PATCH /api/events/admin/events/<id>/` or the **Community Voting & Results** panel on the event page; every change is written to the audit trail.
 
 
 ---
@@ -118,7 +149,7 @@ To run backend tests locally:
 
 ```bash
 cd backend
-python manage.py test events users
+python manage.py test
 ```
 
 To run frontend checks:
@@ -129,5 +160,7 @@ npm run typecheck
 npm run build
 ```
 
-# IMPORTANT
-if DB_HOST isnt set in env then default db is sqlite not psql
+## Notes
+- If `DB_HOST` isn't set, the backend uses SQLite instead of PostgreSQL.
+- Rate limits are configurable via `THROTTLE_COMMUNITY_VOTES`, `THROTTLE_COMMUNITY_COMMENTS` and `THROTTLE_AUTH` (defaults `30/min`, `10/min`, `20/min`).
+- Only set `TRUST_X_FORWARDED_FOR=True` when running behind a trusted reverse proxy.

@@ -164,3 +164,22 @@ class AuthenticationTests(TestCase):
 
         candidate.refresh_from_db()
         self.assertEqual(candidate.role, User.Role.JUDGE)
+
+
+class RefreshRotationTests(TestCase):
+    def test_old_refresh_token_rejected_after_rotation(self):
+        User.objects.create_user(username='rot', email='rot@example.com', password='TestPassword123!')
+        client = APIClient()
+        login = client.post(reverse('auth_login'), {'username': 'rot', 'password': 'TestPassword123!'}, format='json')
+        old_refresh = login.cookies['refresh_token'].value
+
+        c1 = APIClient()
+        c1.cookies['refresh_token'] = old_refresh
+        first = c1.post(reverse('auth_refresh'))
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(first.cookies['refresh_token'].value, old_refresh)
+
+        c2 = APIClient()
+        c2.cookies['refresh_token'] = old_refresh
+        replay = c2.post(reverse('auth_refresh'))
+        self.assertEqual(replay.status_code, status.HTTP_401_UNAUTHORIZED)

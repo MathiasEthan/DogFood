@@ -23,7 +23,24 @@ from .views import (
     AdminJudgingProgressView,
     AdminExportLeaderboardCSVView,
     AdminExportRubricsCSVView,
+    AdminExportFeedbackCSVView,
+    AdminExportSubmissionsCSVView,
+    AdminExportAssignmentsCSVView,
+    AdminExportEvaluationAuditCSVView,
+    PublishResultsView,
+)
+from .community import (
     CommunityVoteView,
+    VotingStatusView,
+    CommunityResultsView,
+    CommentListCreateView,
+    CommentDetailView,
+    CommunityAuditView,
+    CommunityAuditVerifyView,
+    CommunityVotesAdminView,
+    VoidVoteView,
+    ExportCommunityVotesCSVView,
+    ExportCommunityAuditCSVView,
 )
 
 urlpatterns = [
@@ -45,6 +62,24 @@ urlpatterns = [
     path('<int:pk>/admin/judging-progress/', AdminJudgingProgressView.as_view(), name='admin_judging_progress'),
     path('<int:pk>/admin/export/leaderboard-csv/', AdminExportLeaderboardCSVView.as_view(), name='admin_export_leaderboard_csv'),
     path('<int:pk>/admin/export/rubrics-csv/', AdminExportRubricsCSVView.as_view(), name='admin_export_rubrics_csv'),
+    path('<int:pk>/admin/export/rubric-breakdown-csv/', AdminExportRubricsCSVView.as_view(), name='admin_export_rubric_breakdown_csv'),
+    path('<int:pk>/admin/export/feedback-csv/', AdminExportFeedbackCSVView.as_view(), name='admin_export_feedback_csv'),
+    path('<int:pk>/admin/export/submissions-csv/', AdminExportSubmissionsCSVView.as_view(), name='admin_export_submissions_csv'),
+    path('<int:pk>/admin/export/assignments-csv/', AdminExportAssignmentsCSVView.as_view(), name='admin_export_assignments_csv'),
+    path('<int:pk>/admin/export/evaluation-audit-csv/', AdminExportEvaluationAuditCSVView.as_view(), name='admin_export_evaluation_audit_csv'),
+    path('<int:pk>/admin/publish-results/', PublishResultsView.as_view(), name='admin_publish_results'),
+
+    # T3 - community voting, comments, audit
+    path('<int:pk>/voting/', VotingStatusView.as_view(), name='voting_status'),
+    path('<int:pk>/community-results/', CommunityResultsView.as_view(), name='community_results'),
+    path('<int:event_pk>/submissions/<int:sub_pk>/comments/', CommentListCreateView.as_view(), name='submission_comments'),
+    path('<int:event_pk>/comments/<int:comment_pk>/', CommentDetailView.as_view(), name='comment_detail'),
+    path('<int:pk>/admin/community-audit/', CommunityAuditView.as_view(), name='admin_community_audit'),
+    path('<int:pk>/admin/community-audit/verify/', CommunityAuditVerifyView.as_view(), name='admin_community_audit_verify'),
+    path('<int:pk>/admin/community-votes/', CommunityVotesAdminView.as_view(), name='admin_community_votes'),
+    path('<int:pk>/admin/community-votes/<int:vote_pk>/void/', VoidVoteView.as_view(), name='admin_void_vote'),
+    path('<int:pk>/admin/export/community-votes-csv/', ExportCommunityVotesCSVView.as_view(), name='admin_export_community_votes_csv'),
+    path('<int:pk>/admin/export/community-audit-csv/', ExportCommunityAuditCSVView.as_view(), name='admin_export_community_audit_csv'),
 
     path('admin/events/<int:pk>/', AdminEventManageView.as_view(), name='admin_event_manage'),
     path('admin/events/<int:pk>/judges/', AdminEventJudgeManageView.as_view(), name='admin_event_judge_manage'),

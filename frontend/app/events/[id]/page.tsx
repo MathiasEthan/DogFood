@@ -9,6 +9,7 @@ import { api, Event as EventType, Team, ProjectSubmission } from "@/lib/api"
 import { AdminEventDashboard } from "@/components/admin-event-dashboard"
 import { JudgeAppointmentCombobox } from "@/components/judge-appointment-combobox"
 import { EditEventModal } from "@/components/edit-event-modal"
+import { CommunityVotingPanel } from "@/components/community-voting-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -111,11 +112,12 @@ export default function EventDetailPage({
       const data = await api.getEvent(eventId)
       setEvent(data)
 
-      // If organizer, judge, or creator, load submissions roster
+      // Only this event's organizer, its judges, and admins can load the roster
       const isReviewer =
         user &&
-        (["organizer", "judge", "admin"].includes(user.role) ||
-          data.created_by === user.id)
+        (user.role === "admin" ||
+          data.created_by === user.id ||
+          Boolean(data.event_judges?.some((j) => j.id === user.id)))
 
       if (isReviewer) {
         try {
@@ -1421,6 +1423,21 @@ export default function EventDetailPage({
               </div>
             </div>
           )}
+
+          {/* COMMUNITY VOTING (T3) */}
+          {event && event.community_voting_start && event.community_voting_end && !isCreatorOrAdmin && (
+            <Link
+              href={`/events/${eventId}/voting`}
+              className="block rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 hover:bg-emerald-500/10 transition-colors"
+            >
+              <div className="text-sm font-semibold text-emerald-400">Community Voting</div>
+              <div className="text-[11px] text-muted-foreground font-mono">
+                {new Date(event.community_voting_start).toLocaleString()} → {new Date(event.community_voting_end).toLocaleString()}
+                {" · "}Browse projects, vote and comment →
+              </div>
+            </Link>
+          )}
+          {event && isCreatorOrAdmin && <CommunityVotingPanel event={event} onUpdated={fetchEvent} />}
 
           {/* 3. ADMIN MANAGEMENT */}
           {user?.role === "admin" && (

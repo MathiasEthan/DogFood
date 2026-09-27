@@ -21,6 +21,8 @@ from .models import (
     EvaluationAuditLog,
 )
 from .normalization import NormalizationEngine
+from .request_meta import client_ip, user_agent
+from .community import audit_settings_change, seeded_shuffle, snapshot_settings, viewer_seed, stream_csv, safe_filename
 from .assignment import JudgeAssignmentEngine
 from .serializers import (
     EventListSerializer,
@@ -63,7 +65,7 @@ class EventListCreateView(APIView):
             
         data = request.data.copy() if hasattr(request.data, 'copy') else request.data
         import json
-        for field in ['phases', 'tracks', 'prizes']:
+        for field in ['phases', 'tracks', 'prizes', 'rubrics']:
             if field in data and isinstance(data[field], str):
                 try:
                     data[field] = json.loads(data[field])
@@ -95,6 +97,12 @@ class CreateTeamView(APIView):
     def post(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
         user = request.user
+
+        if event.is_judge(user):
+            return Response(
+                {'detail': 'You are a judge for this event and cannot join or create a team in it (conflict of interest).'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Check if user is already a member of a team in this event
         existing_membership = TeamMember.objects.filter(team__event=event, user=user).first()
@@ -142,6 +150,12 @@ class JoinTeamView(APIView):
     def post(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
         user = request.user
+
+        if event.is_judge(user):
+            return Response(
+                {'detail': 'You are a judge for this event and cannot join or create a team in it (conflict of interest).'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Check if user already in a team for this event
         existing_membership = TeamMember.objects.filter(team__event=event, user=user).first()
@@ -284,6 +298,7 @@ class SubmitProjectView(APIView):
             instance=submission,
             data=request.data,
             partial=bool(submission) or is_draft,
+            context={'request': request, 'event': event},
         )
 
         if not serializer.is_valid():
@@ -295,7 +310,7 @@ class SubmitProjectView(APIView):
         return Response(
             {
                 'message': message,
-                'submission': ProjectSubmissionSerializer(saved_submission).data,
+                'submission': ProjectSubmissionSerializer(saved_submission, context={'request': request}).data,
             },
             status=status.HTTP_200_OK if submission else status.HTTP_201_CREATED,
         )
@@ -316,7 +331,10 @@ class MySubmissionView(APIView):
         if not hasattr(team, 'submission'):
             return Response({'detail': 'No project submission found for your team.'}, status=status.HTTP_404_NOT_FOUND)
 
-        return Response(ProjectSubmissionSerializer(team.submission).data, status=status.HTTP_200_OK)
+        return Response(
+            ProjectSubmissionSerializer(team.submission, context={'request': request}).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class EventSubmissionsListView(APIView):
@@ -327,72 +345,67 @@ class EventSubmissionsListView(APIView):
         event = get_object_or_404(Event, pk=pk)
         user = request.user
 
-        if user.role not in ['organizer', 'judge', 'admin'] and event.created_by != user and not user.is_superuser:
+        is_manager = event.is_managed_by(user)
+        if not is_manager and not event.is_judge(user):
             return Response(
-                {'detail': 'Only organizers, judges, and administrators can view the full submissions roster.'},
+                {'detail': 'Only this event\'s organizer, its judges, and administrators can view the submissions roster.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         submissions = ProjectSubmission.objects.filter(team__event=event)
-        serializer = ProjectSubmissionSerializer(submissions, many=True)
+        if not is_manager:
+            # Judges never see drafts
+            submissions = submissions.filter(is_draft=False)
+        serializer = ProjectSubmissionSerializer(submissions, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 
 
 class PublicGalleryView(APIView):
+    """
+    Searchable public gallery. Drafts are never listed, for anyone.
+    While community voting is open, projects are shown in a per-viewer randomized order
+    (stable across refreshes) so list position can't bias votes.
+    """
     permission_classes = [AllowAny]
 
     def get(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
-        
-        # Search query
-        query = request.query_params.get('q', '')
-        track_id = request.query_params.get('track', '')
+        from django.db.models import Q
 
-        from django.utils import timezone
-        now = timezone.now()
-        is_ended = event.end_date <= now
-
-        user = request.user
-        is_reviewer = (
-            user.is_authenticated and (
-                user.role == 'admin' or
-                user.is_superuser or
-                event.created_by == user or
-                user.role == 'judge' or
-                event.judges.filter(pk=user.pk).exists()
-            )
+        submissions = (
+            ProjectSubmission.objects.filter(team__event=event, is_draft=False)
+            .select_related('team', 'team__event', 'track', 'submitted_by')
         )
 
-        # When the contest has concluded, or if the requester is an authorized reviewer (judge/organizer/admin),
-        # all project submissions (including drafts) are visible for evaluation and public archive.
-        if is_ended or is_reviewer:
-            submissions = ProjectSubmission.objects.filter(team__event=event)
-        else:
-            submissions = ProjectSubmission.objects.filter(team__event=event, is_draft=False)
-        
+        query = request.query_params.get('q', '').strip()
         if query:
-            from django.db.models import Q
             submissions = submissions.filter(
-                Q(title__icontains=query) |
-                Q(tech_stack__icontains=query) |
-                Q(team__name__icontains=query)
+                Q(title__icontains=query)
+                | Q(tagline__icontains=query)
+                | Q(tech_stack__icontains=query)
+                | Q(team__name__icontains=query)
+                | Q(track__title__icontains=query)
             )
-            
+
+        track_id = request.query_params.get('track', '')
         if track_id and track_id.isdigit():
             submissions = submissions.filter(track_id=track_id)
 
-        # Randomize ordering if community voting is active and user is not searching
-        is_voting_active = event.community_voting_start and event.community_voting_end and event.community_voting_start <= now <= event.community_voting_end
-        if is_voting_active and not query:
-            submissions = submissions.order_by('?')
+        submissions = list(submissions.distinct())
+        ordering = request.query_params.get('ordering', '')
+        if event.is_voting_active or ordering == 'random':
+            submissions = seeded_shuffle(submissions, viewer_seed(event, request))
+            ordering_used = 'random'
         else:
-            submissions = submissions.order_by('-updated_at')
+            submissions.sort(key=lambda s: s.updated_at, reverse=True)
+            ordering_used = 'recent'
 
-        serializer = ProjectSubmissionSerializer(submissions.distinct(), many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
+        serializer = ProjectSubmissionSerializer(submissions, many=True, context={'request': request})
+        response = Response(serializer.data, status=status.HTTP_200_OK)
+        response['X-Gallery-Ordering'] = ordering_used
+        return response
 
 
 class AdminEventManageView(APIView):
@@ -417,10 +430,13 @@ class AdminEventManageView(APIView):
                     data[field] = json.loads(data[field])
                 except:
                     pass
+        before = snapshot_settings(event)
         serializer = EventCreateSerializer(event, data=data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response(EventDetailSerializer(event).data, status=status.HTTP_200_OK)
+            event.refresh_from_db()
+            audit_settings_change(event, before, request)
+            return Response(EventDetailSerializer(event, context={'request': request}).data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class AdminAllTeamsView(APIView):
@@ -540,6 +556,12 @@ class AdminEventJudgeManageView(APIView):
         else:
             return Response({'error': 'user_id, username, or email is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if TeamMember.objects.filter(team__event=event, user=user).exists():
+            return Response(
+                {'detail': f'@{user.username} is a member of a team in this event and cannot judge it (conflict of interest).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         event.judges.add(user)
         # If user's role was participant, elevate to judge
         if user.role == 'participant':
@@ -599,6 +621,11 @@ class EventRubricsManageView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        if ProjectEvaluation.objects.filter(submission__team__event=event).exists():
+            return Response(
+                {'detail': 'Rubrics are locked once judging has started (evaluations exist).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         serializer = EventRubricSerializer(data=request.data)
         if serializer.is_valid():
             rubric = serializer.save(event=event)
@@ -613,36 +640,74 @@ class EventRubricsManageView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        if ProjectEvaluation.objects.filter(submission__team__event=event).exists():
+            return Response(
+                {'detail': 'Rubrics are locked once judging has started (evaluations exist).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         rubric_id = rubric_pk or request.data.get('rubric_id')
         rubric = get_object_or_404(EventRubric, pk=rubric_id, event=event)
         rubric.delete()
         return Response({'message': 'Rubric removed successfully.'}, status=status.HTTP_200_OK)
 
 
+def _is_platform_admin(user):
+    return bool(user and user.is_authenticated and (user.is_superuser or user.role == 'admin'))
+
+
 class SubmitProjectEvaluationView(APIView):
+    """
+    Judges score a project against every rubric of the event.
+
+    Backend-enforced rules:
+      * only judges appointed to this event (or platform admins) may evaluate — organizer role alone is not enough
+      * conflict of interest: never your own team's project
+      * drafts cannot be evaluated; scoring locks once results are published
+      * once assignments exist, judges may only score the projects assigned to them
+      * every rubric must be scored exactly once, each mark within 1..rubric.max_score
+    """
     permission_classes = [IsAuthenticated]
 
-    def post(self, request, event_pk, sub_pk):
+    def _load(self, event_pk, sub_pk):
         event = get_object_or_404(Event, pk=event_pk)
         submission = get_object_or_404(ProjectSubmission, pk=sub_pk, team__event=event)
+        return event, submission
 
+    def _authorize(self, request, event, submission):
         user = request.user
-        is_judge = event.judges.filter(pk=user.pk).exists()
-        is_creator = event.created_by == user
-        is_admin = user.role == 'admin' or user.is_superuser
-
-        if not (is_judge or is_creator or is_admin):
+        is_admin = _is_platform_admin(user)
+        if not (event.is_judge(user) or is_admin):
             return Response(
-                {'detail': 'Only designated judges, organizers, and administrators can evaluate projects.'},
+                {'detail': 'Only judges appointed to this event can evaluate projects.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
-        # Conflict of Interest (COI) Hard Guard:
-        # A judge cannot evaluate their own project or any project where they belong to the team
         if submission.team.memberships.filter(user=user).exists() or submission.submitted_by_id == user.id:
             return Response(
                 {'detail': 'Conflict of Interest: You cannot evaluate a project submitted by your own team.'},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+        if not is_admin and JudgeAssignment.objects.filter(event=event).exists():
+            if not JudgeAssignment.objects.filter(event=event, judge=user, submission=submission).exists():
+                return Response(
+                    {'detail': 'This project is not assigned to you for evaluation.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        return None
+
+    def post(self, request, event_pk, sub_pk):
+        event, submission = self._load(event_pk, sub_pk)
+        user = request.user
+
+        denied = self._authorize(request, event, submission)
+        if denied:
+            return denied
+
+        if submission.is_draft:
+            return Response({'detail': 'Draft submissions cannot be evaluated.'}, status=status.HTTP_400_BAD_REQUEST)
+        if event.results_published:
+            return Response(
+                {'detail': 'Results have been published; evaluations are locked.'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         rubrics = list(event.rubrics.all())
@@ -653,182 +718,270 @@ class SubmitProjectEvaluationView(APIView):
             )
 
         scores_input = request.data.get('scores', [])
-        feedback = request.data.get('feedback', '').strip()
+        feedback = (request.data.get('feedback') or '').strip()
 
         if not scores_input or not isinstance(scores_input, list):
-            return Response(
-                {'detail': 'A list of rubric scores is required.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({'detail': 'A list of rubric scores is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         rubrics_dict = {r.id: r for r in rubrics}
-        total_weight = sum(r.weight for r in rubrics)
+        total_weight = sum(max(r.weight, 0) for r in rubrics)
 
+        seen = set()
         score_entries = []
-        weighted_sum = 0.0
-
         for item in scores_input:
+            if not isinstance(item, dict):
+                return Response({'detail': 'Each score must be an object with rubric and score.'}, status=status.HTTP_400_BAD_REQUEST)
             rubric_id = item.get('rubric_id') or item.get('rubric')
-            raw_score = item.get('score')
-
+            try:
+                rubric_id = int(rubric_id)
+            except (TypeError, ValueError):
+                return Response({'detail': f'Invalid rubric id {rubric_id!r}.'}, status=status.HTTP_400_BAD_REQUEST)
             if rubric_id not in rubrics_dict:
                 return Response(
                     {'detail': f'Rubric with id {rubric_id} does not belong to this event.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if rubric_id in seen:
+                return Response({'detail': f'Rubric {rubric_id} was scored more than once.'}, status=status.HTTP_400_BAD_REQUEST)
+            seen.add(rubric_id)
 
             try:
-                score_val = float(raw_score)
+                score_val = float(item.get('score'))
             except (TypeError, ValueError):
                 return Response({'detail': f'Score for rubric {rubric_id} must be a number.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            if score_val < 0 or score_val > 10:
-                return Response({'detail': 'Scores must be on a range of 1 to 10.'}, status=status.HTTP_400_BAD_REQUEST)
-
             rubric = rubrics_dict[rubric_id]
+            max_score = rubric.max_score or 10
+            if score_val < 1 or score_val > max_score:
+                return Response(
+                    {'detail': f"Score for '{rubric.title}' must be in the range of 1 to {max_score}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             score_entries.append((rubric, score_val))
 
-            # Multiply marks by the percentage of the rubric (normalizing across total configured weight)
-            if total_weight > 0:
-                weighted_sum += score_val * (rubric.weight / total_weight)
-            else:
-                weighted_sum += score_val / len(rubrics)
+        missing = [r.title for r in rubrics if r.id not in seen]
+        if missing:
+            return Response(
+                {'detail': 'Every rubric must be scored. Missing: ' + ', '.join(missing)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
+        # Rescale each mark to /10, then apply normalized weights w_k = W_k / sum(W)
+        weighted_sum = 0.0
+        for rubric, score_val in score_entries:
+            mark_10 = score_val / (rubric.max_score or 10) * 10
+            if total_weight > 0:
+                weighted_sum += mark_10 * (max(rubric.weight, 0) / total_weight)
+            else:
+                weighted_sum += mark_10 / len(rubrics)
         final_total = round(weighted_sum, 2)
 
         prev_eval = ProjectEvaluation.objects.filter(submission=submission, judge=user).first()
         prev_score = prev_eval.total_score if prev_eval else 0.0
+        previous_scores = list(prev_eval.scores.values('rubric_id', 'score')) if prev_eval else None
         score_delta = round(final_total - prev_score, 2)
 
-        # Check for Leave-One-Out (LOO) anomaly: deviation >= 3.0 from consensus of other judges
+        # Leave-one-out consensus check: |s_j - mean(others)| >= 3.0 flags the evaluation
         other_evals = list(
             ProjectEvaluation.objects.filter(submission=submission).exclude(judge=user).values_list('total_score', flat=True)
         )
         is_outlier = False
-        if len(other_evals) >= 1:
+        if other_evals:
             other_mean = sum(other_evals) / len(other_evals)
-            if abs(final_total - other_mean) >= 3.0:
-                is_outlier = True
+            is_outlier = abs(final_total - other_mean) >= 3.0
 
-        evaluation, created = ProjectEvaluation.objects.update_or_create(
-            submission=submission,
-            judge=user,
-            defaults={
-                'feedback': feedback,
-                'total_score': final_total,
-            }
-        )
+        now = timezone.now()
+        assignment = JudgeAssignment.objects.filter(event=event, judge=user, submission=submission).first()
+        dwell_seconds = None
+        if assignment and assignment.opened_at:
+            dwell_seconds = round((now - assignment.opened_at).total_seconds(), 1)
+        flags = []
+        if is_outlier:
+            flags.append('LOO_OUTLIER')
+        if prev_eval is None and dwell_seconds is not None and dwell_seconds < 45:
+            flags.append('RAPID_SUBMISSION')
 
-        evaluation.scores.all().delete()
-        for rubric, score_val in score_entries:
-            EvaluationScore.objects.create(
-                evaluation=evaluation,
-                rubric=rubric,
-                score=score_val,
+        with transaction.atomic():
+            evaluation, created = ProjectEvaluation.objects.update_or_create(
+                submission=submission,
+                judge=user,
+                defaults={'feedback': feedback, 'total_score': final_total},
             )
-
-        # Mark any pending JudgeAssignment as completed
-        JudgeAssignment.objects.filter(
-            event=event, judge=user, submission=submission
-        ).update(status=JudgeAssignment.Status.COMPLETED, completed_at=timezone.now())
-
-        # Record immutable audit log
-        client_ip = request.META.get('REMOTE_ADDR')
-        user_agent = request.META.get('HTTP_USER_AGENT', '')
-        action = EvaluationAuditLog.Action.FLAGGED if is_outlier else (
-            EvaluationAuditLog.Action.CREATED if created else EvaluationAuditLog.Action.UPDATED
-        )
-        EvaluationAuditLog.objects.create(
-            evaluation=evaluation,
-            judge=user,
-            submission=submission,
-            action=action,
-            score_delta=score_delta,
-            snapshot_scores=scores_input,
-            previous_scores=list(prev_eval.scores.values('rubric_id', 'score')) if prev_eval else None,
-            feedback_text=feedback,
-            ip_address=client_ip,
-            user_agent=user_agent,
-            is_outlier=is_outlier,
-        )
+            evaluation.scores.all().delete()
+            EvaluationScore.objects.bulk_create(
+                [EvaluationScore(evaluation=evaluation, rubric=r, score=v) for r, v in score_entries]
+            )
+            JudgeAssignment.objects.filter(event=event, judge=user, submission=submission).update(
+                status=JudgeAssignment.Status.COMPLETED, completed_at=now
+            )
+            action = EvaluationAuditLog.Action.FLAGGED if flags else (
+                EvaluationAuditLog.Action.CREATED if created else EvaluationAuditLog.Action.UPDATED
+            )
+            EvaluationAuditLog.objects.create(
+                evaluation=evaluation,
+                judge=user,
+                submission=submission,
+                action=action,
+                score_delta=score_delta,
+                snapshot_scores=[
+                    {'rubric_id': r.id, 'rubric': r.title, 'weight': r.weight, 'max_score': r.max_score, 'score': v}
+                    for r, v in score_entries
+                ],
+                previous_scores=previous_scores,
+                feedback_text=feedback,
+                ip_address=client_ip(request),
+                user_agent=user_agent(request),
+                is_outlier=is_outlier,
+                dwell_seconds=dwell_seconds,
+                flags=flags,
+            )
 
         return Response(
             {
                 'message': 'Evaluation recorded successfully.',
                 'evaluation': ProjectEvaluationSerializer(evaluation).data,
                 'is_outlier': is_outlier,
+                'flags': flags,
             },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
     def get(self, request, event_pk, sub_pk):
-        event = get_object_or_404(Event, pk=event_pk)
-        submission = get_object_or_404(ProjectSubmission, pk=sub_pk, team__event=event)
+        event, submission = self._load(event_pk, sub_pk)
+        denied = self._authorize(request, event, submission)
+        if denied:
+            return denied
+        # Server-side dwell-time clock: first time the judge opens their assigned project
+        JudgeAssignment.objects.filter(
+            event=event, judge=request.user, submission=submission, opened_at__isnull=True
+        ).update(opened_at=timezone.now())
         evaluation = ProjectEvaluation.objects.filter(submission=submission, judge=request.user).first()
         if not evaluation:
             return Response({'evaluated': False, 'evaluation': None}, status=status.HTTP_200_OK)
-        return Response({'evaluated': True, 'evaluation': ProjectEvaluationSerializer(evaluation).data}, status=status.HTTP_200_OK)
+        return Response(
+            {'evaluated': True, 'evaluation': ProjectEvaluationSerializer(evaluation).data},
+            status=status.HTTP_200_OK,
+        )
+
+
+def compute_standings(event):
+    """Shared by the leaderboard, progress dashboard and CSV export."""
+    submissions = list(
+        ProjectSubmission.objects.filter(team__event=event, is_draft=False)
+        .select_related('team', 'track')
+        .prefetch_related('evaluations', 'evaluations__judge', 'evaluations__scores', 'evaluations__scores__rubric')
+    )
+    evaluations_payload = list(
+        ProjectEvaluation.objects.filter(submission__team__event=event, submission__is_draft=False).values(
+            'id', 'submission_id', 'judge_id', 'total_score'
+        )
+    )
+    norm_scores, raw_scores, std_errs, telemetry = NormalizationEngine.calculate_normalized_scores(evaluations_payload)
+    outliers = {}
+    for row in (
+        EvaluationAuditLog.objects.filter(submission__team__event=event, is_outlier=True)
+        .values('submission_id', 'judge_id').distinct()
+    ):
+        outliers[row['submission_id']] = outliers.get(row['submission_id'], 0) + 1
+
+    standings = []
+    for sub in submissions:
+        evals = list(sub.evaluations.all())
+        norm = norm_scores.get(sub.id)
+        standings.append({
+            'submission': sub,
+            'evaluations': evals,
+            'normalized_score': norm,
+            'raw_score': raw_scores.get(sub.id),
+            'standard_error': std_errs.get(sub.id),
+            'evaluations_count': len(evals),
+            'outliers_flagged': outliers.get(sub.id, 0),
+        })
+    standings.sort(
+        key=lambda x: (
+            x['normalized_score'] is not None,
+            x['normalized_score'] or 0,
+            -(x['standard_error'] or 0),
+        ),
+        reverse=True,
+    )
+    return standings, telemetry
+
+
+def anonymized_evaluations(evals):
+    """Public view of judge feedback: 'Judge A', 'Judge B' ... per project, no identities."""
+    out = []
+    for idx, ev in enumerate(sorted(evals, key=lambda e: e.id)):
+        label = f"Judge {chr(ord('A') + idx)}" if idx < 26 else f"Judge {idx + 1}"
+        out.append({
+            'judge_label': label,
+            'total_score': ev.total_score,
+            'feedback': ev.feedback,
+            'scores': [
+                {'rubric': s.rubric_id, 'rubric_title': s.rubric.title, 'rubric_weight': s.rubric.weight, 'score': s.score}
+                for s in ev.scores.all()
+            ],
+        })
+    return out
 
 
 class EventLeaderboardView(APIView):
+    """
+    Judging leaderboard. Anti-anchoring: hidden from everyone (including judges) until the
+    organizer publishes results. Organizers/admins always see it; the public sees anonymized feedback.
+    """
     permission_classes = [AllowAny]
 
     def get(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
-        submissions = list(
-            ProjectSubmission.objects.filter(team__event=event)
-            .select_related('team')
-            .prefetch_related(
-                'evaluations',
-                'evaluations__judge',
-                'evaluations__scores',
-                'evaluations__scores__rubric',
+        is_manager = event.is_managed_by(request.user)
+        if not is_manager and not event.results_published:
+            return Response(
+                {'detail': 'Judging results are hidden until the organizer publishes them.', 'results_hidden': True},
+                status=status.HTTP_403_FORBIDDEN,
             )
-        )
 
-        evaluations_payload = list(
-            ProjectEvaluation.objects.filter(submission__team__event=event).values(
-                'id', 'submission_id', 'judge_id', 'total_score'
-            )
-        )
-
-        norm_scores, raw_scores, std_errs, telemetry = NormalizationEngine.calculate_normalized_scores(evaluations_payload)
-
+        standings, _ = compute_standings(event)
         leaderboard = []
-        for sub in submissions:
-            evals = list(sub.evaluations.all())
-            count = len(evals)
-            norm_score = norm_scores.get(sub.id)
-            raw_score = raw_scores.get(sub.id)
-            se = std_errs.get(sub.id, 0.0)
-
-            # Fall back to raw_score if normalized is not available
-            final_display_score = norm_score if norm_score is not None else raw_score
-
-            leaderboard.append({
+        for rank, row in enumerate(standings, start=1):
+            sub = row['submission']
+            norm = row['normalized_score']
+            entry = {
+                'rank': rank,
                 'submission_id': sub.id,
                 'submission_title': sub.title,
                 'team_name': sub.team.name,
                 'tagline': sub.tagline,
                 'track': sub.track_id,
-                'average_score': final_display_score,
-                'normalized_score': norm_score,
-                'raw_score': raw_score,
-                'standard_error': se,
-                'evaluations_count': count,
-                'evaluations': ProjectEvaluationSerializer(evals, many=True).data,
-            })
-
-        leaderboard.sort(
-            key=lambda x: (
-                x['average_score'] is not None,
-                x['average_score'] or 0,
-                -(x['standard_error'] or 0),
-            ),
-            reverse=True,
-        )
-
+                'track_title': sub.track.title if sub.track else None,
+                'average_score': norm if norm is not None else row['raw_score'],
+                'normalized_score': norm,
+                'raw_score': row['raw_score'],
+                'standard_error': row['standard_error'],
+                'evaluations_count': row['evaluations_count'],
+            }
+            if is_manager:
+                entry['outliers_flagged'] = row['outliers_flagged']
+                entry['evaluations'] = ProjectEvaluationSerializer(row['evaluations'], many=True).data
+            else:
+                entry['evaluations'] = anonymized_evaluations(row['evaluations'])
+            leaderboard.append(entry)
         return Response(leaderboard, status=status.HTTP_200_OK)
+
+
+class PublishResultsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        if not event.is_managed_by(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        published = request.data.get('published', True)
+        if isinstance(published, str):
+            published = published.lower() in ('1', 'true', 'yes')
+        event.results_published = bool(published)
+        event.save(update_fields=['results_published', 'updated_at'])
+        return Response({'results_published': event.results_published}, status=status.HTTP_200_OK)
 
 
 class AdminAssignJudgesView(APIView):
@@ -836,21 +989,22 @@ class AdminAssignJudgesView(APIView):
 
     def post(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
-        if request.user.role != 'admin' and not request.user.is_superuser and event.created_by != request.user:
+        if not event.is_managed_by(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
         try:
-            k = int(request.data.get('k_per_project', 3))
+            k = int(request.data.get('k_per_project', event.judges_per_project))
         except (ValueError, TypeError):
-            k = 3
+            k = event.judges_per_project
+        if k < 1 or k > 20:
+            return Response({'detail': 'k_per_project must be between 1 and 20.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        result = JudgeAssignmentEngine.assign_judges_for_event(
-            event=event,
-            k_per_project=k,
-            clear_existing_pending=True,
-        )
+        result = JudgeAssignmentEngine.assign_judges_for_event(event=event, k_per_project=k, clear_existing_pending=True)
         if not result.get('success'):
             return Response(result, status=status.HTTP_400_BAD_REQUEST)
+        if event.judges_per_project != k:
+            event.judges_per_project = k
+            event.save(update_fields=['judges_per_project', 'updated_at'])
         return Response(result, status=status.HTTP_200_OK)
 
 
@@ -859,217 +1013,239 @@ class AdminJudgingProgressView(APIView):
 
     def get(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
-        if request.user.role != 'admin' and not request.user.is_superuser and event.created_by != request.user:
+        if not event.is_managed_by(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
-        submissions = list(ProjectSubmission.objects.filter(team__event=event, is_draft=False))
+        target_k = event.judges_per_project
+        submissions = list(ProjectSubmission.objects.filter(team__event=event, is_draft=False).select_related('team'))
         judges = list(event.judges.all())
         assignments = list(JudgeAssignment.objects.filter(event=event).select_related('judge', 'submission'))
+        standings, telemetry = compute_standings(event)
+        standings_by_id = {row['submission'].id: row for row in standings}
 
         total_assignments = len(assignments)
-        completed_assignments = len([a for a in assignments if a.status == JudgeAssignment.Status.COMPLETED])
-        progress_pct = round((completed_assignments / total_assignments * 100), 1) if total_assignments > 0 else 0.0
+        completed_assignments = sum(1 for a in assignments if a.status == JudgeAssignment.Status.COMPLETED)
+        progress_pct = round(completed_assignments / total_assignments * 100, 1) if total_assignments else 0.0
 
-        judge_map = {
-            j.id: {
+        eval_scores_by_judge = {}
+        for ev in ProjectEvaluation.objects.filter(submission__team__event=event, submission__is_draft=False):
+            eval_scores_by_judge.setdefault(ev.judge_id, []).append(ev.total_score)
+
+        judge_rows = {}
+        for j in judges:
+            t = telemetry.get(str(j.id), {})
+            scores = eval_scores_by_judge.get(j.id, [])
+            variance = None
+            if len(scores) > 1:
+                m = sum(scores) / len(scores)
+                variance = round(sum((x - m) ** 2 for x in scores) / (len(scores) - 1), 3)
+            judge_rows[j.id] = {
                 'judge_id': j.id,
                 'username': j.username,
                 'assigned': 0,
                 'completed': 0,
                 'progress_percent': 0.0,
+                'avg_review_seconds': None,
+                'raw_mean': t.get('raw_mean'),
+                'shrunk_mean': t.get('shrunk_mean'),
+                'shrunk_std': t.get('shrunk_std'),
+                'score_variance': variance,
+                'flatline_warning': bool(len(scores) >= 5 and variance is not None and variance < 0.05),
             }
-            for j in judges
-        }
-        for a in assignments:
-            if a.judge_id in judge_map:
-                judge_map[a.judge_id]['assigned'] += 1
-                if a.status == JudgeAssignment.Status.COMPLETED:
-                    judge_map[a.judge_id]['completed'] += 1
 
-        for j_data in judge_map.values():
-            if j_data['assigned'] > 0:
-                j_data['progress_percent'] = round((j_data['completed'] / j_data['assigned'] * 100), 1)
-
-        target_k = 3
-        sub_review_counts = {}
+        review_times = {}
         for a in assignments:
+            row = judge_rows.get(a.judge_id)
+            if not row:
+                continue
+            row['assigned'] += 1
             if a.status == JudgeAssignment.Status.COMPLETED:
-                sub_review_counts[a.submission_id] = sub_review_counts.get(a.submission_id, 0) + 1
+                row['completed'] += 1
+                if a.opened_at and a.completed_at and a.completed_at >= a.opened_at:
+                    review_times.setdefault(a.judge_id, []).append((a.completed_at - a.opened_at).total_seconds())
+        for j_id, row in judge_rows.items():
+            if row['assigned']:
+                row['progress_percent'] = round(row['completed'] / row['assigned'] * 100, 1)
+            times = review_times.get(j_id)
+            if times:
+                row['avg_review_seconds'] = round(sum(times) / len(times), 1)
 
-        under_reviewed = []
+        assigned_counts, completed_counts = {}, {}
+        for a in assignments:
+            assigned_counts[a.submission_id] = assigned_counts.get(a.submission_id, 0) + 1
+            if a.status == JudgeAssignment.Status.COMPLETED:
+                completed_counts[a.submission_id] = completed_counts.get(a.submission_id, 0) + 1
+
+        project_matrix, under_reviewed = [], []
         for s in submissions:
-            reviews_done = sub_review_counts.get(s.id, 0)
-            if reviews_done < target_k:
+            done = completed_counts.get(s.id, 0)
+            assigned = assigned_counts.get(s.id, 0)
+            if done >= target_k:
+                saturation = 'SATISFIED'
+            elif assigned >= target_k:
+                saturation = 'IN_PROGRESS'
+            else:
+                saturation = 'DEFICIT'
+            st = standings_by_id.get(s.id, {})
+            project_matrix.append({
+                'submission_id': s.id,
+                'title': s.title,
+                'team_name': s.team.name,
+                'assigned_judges': assigned,
+                'reviews_completed': done,
+                'target_reviews': target_k,
+                'saturation': saturation,
+                'raw_score': st.get('raw_score'),
+                'normalized_score': st.get('normalized_score'),
+                'standard_error': st.get('standard_error'),
+                'outliers_flagged': st.get('outliers_flagged', 0),
+            })
+            if done < target_k:
                 under_reviewed.append({
                     'submission_id': s.id,
                     'title': s.title,
                     'team_name': s.team.name,
-                    'reviews_completed': reviews_done,
+                    'reviews_completed': done,
                     'target_reviews': target_k,
                 })
 
+        satisfied = sum(1 for p in project_matrix if p['saturation'] == 'SATISFIED')
         return Response({
             'summary': {
                 'total_submissions': len(submissions),
                 'total_judges': len(judges),
+                'target_reviews_per_project': target_k,
                 'total_assignments': total_assignments,
                 'completed_assignments': completed_assignments,
                 'overall_progress_percent': progress_pct,
+                'saturation_percent': round(satisfied / len(submissions) * 100, 1) if submissions else 0.0,
                 'under_reviewed_count': len(under_reviewed),
+                'flagged_evaluations': EvaluationAuditLog.objects.filter(
+                    submission__team__event=event, action=EvaluationAuditLog.Action.FLAGGED
+                ).count(),
+                'results_published': event.results_published,
             },
-            'judges': list(judge_map.values()),
+            'judges': list(judge_rows.values()),
+            'projects': project_matrix,
             'under_reviewed_submissions': under_reviewed,
         }, status=status.HTTP_200_OK)
 
 
-class EchoBuffer:
-    def write(self, value):
-        return value
-
-
-class AdminExportLeaderboardCSVView(APIView):
-    permission_classes = [AllowAny]
-
-    def get(self, request, pk):
-        event = get_object_or_404(Event, pk=pk)
-        evaluations_payload = list(
-            ProjectEvaluation.objects.filter(submission__team__event=event).values(
-                'id', 'submission_id', 'judge_id', 'total_score'
-            )
-        )
-        norm_scores, raw_scores, std_errs, _ = NormalizationEngine.calculate_normalized_scores(evaluations_payload)
-
-        submissions = list(
-            ProjectSubmission.objects.filter(team__event=event).select_related('team', 'track')
-        )
-
-        ranked = []
-        for s in submissions:
-            eval_count = len([e for e in evaluations_payload if e['submission_id'] == s.id])
-            ranked.append({
-                'id': s.id,
-                'title': s.title,
-                'team': s.team.name,
-                'track': s.track.title if s.track else 'General',
-                'norm_score': norm_scores.get(s.id, 0.0),
-                'raw_score': raw_scores.get(s.id, 0.0),
-                'se': std_errs.get(s.id, 0.0),
-                'count': eval_count,
-            })
-        ranked.sort(key=lambda x: (x['norm_score'], -x['se']), reverse=True)
-
-        def row_generator():
-            buffer = EchoBuffer()
-            writer = csv.writer(buffer)
-            yield writer.writerow([
-                'Rank', 'Submission ID', 'Project Title', 'Team Name', 'Track',
-                'Normalized Score (1-10)', 'Raw Average Score', 'Standard Error (SE)', 'Reviews Count'
-            ])
-            for idx, r in enumerate(ranked, start=1):
-                yield writer.writerow([
-                    idx,
-                    r['id'],
-                    r['title'],
-                    r['team'],
-                    r['track'],
-                    f"{r['norm_score']:.2f}",
-                    f"{r['raw_score']:.2f}",
-                    f"{r['se']:.3f}",
-                    r['count'],
-                ])
-
-        safe_title = "".join(c for c in event.title if c.isalnum() or c in (' ', '_', '-')).strip().replace(' ', '_')
-        response = StreamingHttpResponse(row_generator(), content_type='text/csv')
-        response['Content-Disposition'] = f'attachment; filename="{safe_title}_leaderboard.csv"'
-        return response
-
-
-class AdminExportRubricsCSVView(APIView):
-    permission_classes = [AllowAny]
-
-    def get(self, request, pk):
-        event = get_object_or_404(Event, pk=pk)
-        scores = EvaluationScore.objects.filter(
-            evaluation__submission__team__event=event
-        ).select_related(
-            'evaluation',
-            'evaluation__submission',
-            'evaluation__submission__team',
-            'evaluation__judge',
-            'rubric',
-        )
-
-        def row_generator():
-            buffer = EchoBuffer()
-            writer = csv.writer(buffer)
-            yield writer.writerow([
-                'Submission ID', 'Project Title', 'Team Name', 'Judge Username',
-                'Rubric Title', 'Rubric Weight %', 'Raw Mark (1-10)', 'Evaluation Total', 'Timestamp'
-            ])
-            for s in scores:
-                yield writer.writerow([
-                    s.evaluation.submission_id,
-                    s.evaluation.submission.title,
-                    s.evaluation.submission.team.name,
-                    s.evaluation.judge.username if s.evaluation.judge else 'Anonymized',
-                    s.rubric.title,
-                    s.rubric.weight,
-                    s.score,
-                    s.evaluation.total_score,
-                    s.evaluation.created_at.isoformat(),
-                ])
-
-        safe_title = "".join(c for c in event.title if c.isalnum() or c in (' ', '_', '-')).strip().replace(' ', '_')
-        response = StreamingHttpResponse(row_generator(), content_type='text/csv')
-        response['Content-Disposition'] = f'attachment; filename="{safe_title}_rubrics_breakdown.csv"'
-        return response
-
-
-from rest_framework.throttling import UserRateThrottle
-
-class VoteThrottle(UserRateThrottle):
-    rate = '20/min'
-
-class CommunityVoteView(APIView):
+class ManagerCSVView(APIView):
+    """Base for organizer/admin-only streaming CSV exports."""
     permission_classes = [IsAuthenticated]
-    throttle_classes = [VoteThrottle]
 
-    def post(self, request, event_pk, sub_pk):
-        event = get_object_or_404(Event, pk=event_pk)
-        submission = get_object_or_404(ProjectSubmission, pk=sub_pk, team__event=event)
-        
-        now = timezone.now()
-        is_voting_active = event.community_voting_start and event.community_voting_end and event.community_voting_start <= now <= event.community_voting_end
-        
-        if not is_voting_active:
-            return Response({'detail': 'Voting is not active for this event.'}, status=status.HTTP_400_BAD_REQUEST)
+    def get(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        if not event.is_managed_by(request.user):
+            return Response(
+                {'detail': 'Only the organizer of this event or an admin can export data.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        header, rows, suffix = self.build(event)
+        return stream_csv(safe_filename(event, suffix), header, rows)
 
-        # Create or delete vote
-        from .models import CommunityVote, VoteAuditLog
-        
-        # Check if already voted
-        vote = CommunityVote.objects.filter(submission=submission, voter=request.user).first()
-        
-        ip_address = request.META.get('REMOTE_ADDR')
-        user_agent = request.META.get('HTTP_USER_AGENT', '')
-        
-        if vote:
-            vote.delete()
-            VoteAuditLog.objects.create(
-                submission=submission,
-                voter=request.user,
-                action=VoteAuditLog.Action.UNVOTED,
-                ip_address=ip_address,
-                user_agent=user_agent
-            )
-            return Response({'detail': 'Vote removed.', 'has_voted': False}, status=status.HTTP_200_OK)
-        else:
-            CommunityVote.objects.create(submission=submission, voter=request.user)
-            VoteAuditLog.objects.create(
-                submission=submission,
-                voter=request.user,
-                action=VoteAuditLog.Action.VOTED,
-                ip_address=ip_address,
-                user_agent=user_agent
-            )
-            return Response({'detail': 'Vote cast successfully.', 'has_voted': True}, status=status.HTTP_201_CREATED)
+    def build(self, event):  # pragma: no cover - abstract
+        raise NotImplementedError
+
+
+def _fmt(value, digits=2):
+    return '' if value is None else f"{value:.{digits}f}"
+
+
+class AdminExportLeaderboardCSVView(ManagerCSVView):
+    def build(self, event):
+        standings, _ = compute_standings(event)
+        rows = (
+            [
+                rank, r['submission'].id, r['submission'].title, r['submission'].team.name,
+                r['submission'].track.title if r['submission'].track else 'General',
+                _fmt(r['raw_score']), _fmt(r['normalized_score']), _fmt(r['standard_error'], 3),
+                r['evaluations_count'], r['outliers_flagged'],
+            ]
+            for rank, r in enumerate(standings, start=1)
+        )
+        header = ['Rank', 'Submission ID', 'Project Title', 'Team Name', 'Track', 'Raw Score',
+                  'Normalized Score', 'Standard Error', 'Completed Reviews', 'Outliers Flagged']
+        return header, rows, 'leaderboard'
+
+
+class AdminExportRubricsCSVView(ManagerCSVView):
+    def build(self, event):
+        scores = EvaluationScore.objects.filter(evaluation__submission__team__event=event).select_related(
+            'evaluation', 'evaluation__submission', 'evaluation__submission__team', 'evaluation__judge', 'rubric'
+        ).order_by('evaluation__submission_id', 'evaluation__judge_id', 'rubric_id')
+        total_weight = sum(max(r.weight, 0) for r in event.rubrics.all()) or 1
+
+        def rows():
+            for s in scores.iterator():
+                weight_share = max(s.rubric.weight, 0) / total_weight
+                mark_10 = s.score / (s.rubric.max_score or 10) * 10
+                yield [
+                    s.evaluation.submission_id, s.evaluation.submission.title, s.evaluation.submission.team.name,
+                    s.evaluation.judge.username if s.evaluation.judge else 'Anonymized',
+                    s.rubric.title, round(weight_share * 100, 2), s.score, round(mark_10 * weight_share, 3),
+                    s.evaluation.total_score, s.evaluation.updated_at.isoformat(),
+                ]
+
+        header = ['Submission ID', 'Project Title', 'Team Name', 'Judge Identifier', 'Rubric Name', 'Weight %',
+                  'Raw Score', 'Weighted Contribution', 'Evaluation Total', 'Timestamp']
+        return header, rows(), 'rubric_breakdown'
+
+
+class AdminExportFeedbackCSVView(ManagerCSVView):
+    def build(self, event):
+        evals = ProjectEvaluation.objects.filter(submission__team__event=event).select_related(
+            'submission', 'submission__team', 'judge'
+        ).order_by('submission_id', 'id')
+        rows = (
+            [e.submission_id, e.submission.title, e.submission.team.name, e.judge.username if e.judge else '',
+             e.total_score, e.feedback, e.updated_at.isoformat()]
+            for e in evals.iterator()
+        )
+        header = ['Submission ID', 'Project Title', 'Team Name', 'Judge Identifier', 'Weighted Score',
+                  'Feedback Notes', 'Submitted At']
+        return header, rows, 'feedback'
+
+
+class AdminExportSubmissionsCSVView(ManagerCSVView):
+    def build(self, event):
+        subs = ProjectSubmission.objects.filter(team__event=event).select_related('team', 'track', 'submitted_by')
+        rows = (
+            [s.id, s.title, s.team.name, s.team.memberships.count(), s.track.title if s.track else '',
+             'draft' if s.is_draft else 'submitted', s.github_url, s.demo_url, s.presentation_url, s.tech_stack,
+             s.submitted_by.username, s.created_at.isoformat(), s.updated_at.isoformat()]
+            for s in subs.iterator()
+        )
+        header = ['Submission ID', 'Project Title', 'Team Name', 'Team Size', 'Track', 'Status', 'GitHub URL',
+                  'Demo URL', 'Presentation URL', 'Tech Stack', 'Submitted By', 'Created At', 'Updated At']
+        return header, rows, 'submissions'
+
+
+class AdminExportAssignmentsCSVView(ManagerCSVView):
+    def build(self, event):
+        qs = JudgeAssignment.objects.filter(event=event).select_related('judge', 'submission', 'submission__team')
+        rows = (
+            [a.id, a.judge.username, a.submission_id, a.submission.title, a.submission.team.name, a.status,
+             a.assigned_at.isoformat(), a.opened_at.isoformat() if a.opened_at else '',
+             a.completed_at.isoformat() if a.completed_at else '']
+            for a in qs.order_by('judge__username', 'submission_id').iterator()
+        )
+        header = ['Assignment ID', 'Judge', 'Submission ID', 'Project Title', 'Team Name', 'Status',
+                  'Assigned At', 'First Opened At', 'Completed At']
+        return header, rows, 'judge_assignments'
+
+
+class AdminExportEvaluationAuditCSVView(ManagerCSVView):
+    def build(self, event):
+        qs = EvaluationAuditLog.objects.filter(submission__team__event=event).select_related('judge', 'submission')
+        rows = (
+            [l.id, l.timestamp.isoformat(), l.action, l.submission_id, l.submission.title,
+             l.judge.username if l.judge else '', l.score_delta, 'yes' if l.is_outlier else 'no',
+             '|'.join(l.flags or []), '' if l.dwell_seconds is None else l.dwell_seconds,
+             l.ip_address or '', l.snapshot_scores]
+            for l in qs.order_by('id').iterator()
+        )
+        header = ['Entry ID', 'Timestamp', 'Action', 'Submission ID', 'Project Title', 'Judge', 'Score Delta',
+                  'Outlier', 'Flags', 'Dwell Seconds', 'IP Address', 'Scores Snapshot']
+        return header, rows, 'evaluation_audit'

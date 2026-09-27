@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useAuth } from "@/context/auth-context"
 import { Header } from "@/components/header"
 import { Squares } from "@/components/reactbits/squares"
-import { api, Event as EventType, ProjectSubmission, LeaderboardEntry } from "@/lib/api"
+import { api, ApiError, Event as EventType, ProjectSubmission, LeaderboardEntry } from "@/lib/api"
 import { EvaluateSubmissionModal } from "@/components/evaluate-submission-modal"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -40,6 +40,7 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
   const [event, setEvent] = useState<EventType | null>(null)
   const [submissions, setSubmissions] = useState<ProjectSubmission[]>([])
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
+  const [leaderboardHidden, setLeaderboardHidden] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<"projects" | "leaderboard">("projects")
 
   const [loading, setLoading] = useState(true)
@@ -69,8 +70,14 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
     try {
       const data = await api.getLeaderboard(eventId)
       setLeaderboard(data)
+      setLeaderboardHidden(null)
     } catch (e) {
-      console.error("Failed to load leaderboard", e)
+      if (e instanceof ApiError && e.status === 403) {
+        setLeaderboard([])
+        setLeaderboardHidden(e.message)
+      } else {
+        console.error("Failed to load leaderboard", e)
+      }
     } finally {
       setLoadingLeaderboard(false)
     }
@@ -88,15 +95,10 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
 
   const now = new Date()
   const isEnded = event ? new Date(event.end_date) <= now : false
-  const isJudgeOrOrganizer = Boolean(
-    user && (
-      user.role === "judge" ||
-      user.role === "organizer" ||
-      user.role === "admin" ||
-      event?.created_by === user.id ||
-      event?.event_judges?.some((j) => j.id === user.id)
-    )
-  )
+  // Scoped to THIS event: its organizer, its appointed judges, or a platform admin
+  const isManager = Boolean(user && (user.role === "admin" || event?.created_by === user.id))
+  const isEventJudge = Boolean(user && (user.role === "admin" || event?.event_judges?.some((j) => j.id === user.id)))
+  const isJudgeOrOrganizer = isManager || isEventJudge
 
   const getMediaUrl = (url: string | null) => {
     if (!url) return null
@@ -148,7 +150,7 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
             <p className="text-xs text-muted-foreground">
               {event?.title ? `Competition submissions for ${event.title}. ` : ""}
               {isEnded
-                ? "This contest has concluded. All project submissions are openly archived for public and peer review."
+                ? "This contest has concluded. All submitted projects remain publicly archived for peer review."
                 : isJudgeOrOrganizer
                 ? "Evaluate projects using the organizer-defined rubrics. Your weighted marks contribute to the official event standings."
                 : "Explore published projects built during this hackathon."}
@@ -272,7 +274,7 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                               </div>
 
                               {/* Judge Evaluate Button */}
-                              {isJudgeOrOrganizer && (
+                              {isEventJudge && (
                                 <Button
                                   size="sm"
                                   onClick={() => setEvaluatingSubmission(sub)}
@@ -424,6 +426,7 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    {isManager && (<>
                     <Button
                       variant="outline"
                       size="sm"
@@ -442,6 +445,7 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                       <Download className="size-3 mr-1 text-amber-400" />
                       Rubrics CSV
                     </Button>
+                    </>)}
                     <Button
                       variant="outline"
                       size="sm"
@@ -470,6 +474,14 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                     <Loader2 className="size-4 animate-spin text-foreground" />
                     Calculating weighted standings...
                   </div>
+                ) : leaderboardHidden ? (
+                  <div className="p-8 text-center space-y-1">
+                    <div className="text-sm font-semibold text-foreground">Results are not published yet</div>
+                    <div className="text-xs text-muted-foreground">
+                      Standings stay hidden from participants and judges until the organizer publishes them, so no one is anchored by
+                      early scores.
+                    </div>
+                  </div>
                 ) : leaderboard.length === 0 ? (
                   <div className="p-8 text-center text-xs text-muted-foreground">
                     No submissions available to rank.
@@ -483,7 +495,7 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                           <th className="py-2.5 px-3 font-normal">Team & Project</th>
                           <th className="py-2.5 px-3 font-normal text-center">Reviews</th>
                           <th className="py-2.5 px-3 font-normal text-right">Normalized Score</th>
-                          {isJudgeOrOrganizer && (
+                          {isEventJudge && (
                             <th className="py-2.5 px-3 font-normal text-right">Action</th>
                           )}
                         </tr>
@@ -557,7 +569,7 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                                 )}
                               </td>
 
-                              {isJudgeOrOrganizer && (
+                              {isEventJudge && (
                                 <td className="py-3 px-3 text-right">
                                   <Button
                                     size="sm"
