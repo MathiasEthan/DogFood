@@ -8,6 +8,8 @@ from .views import (
     AdminUserListView,
     AppointJudgeView,
     AppointableJudgesView,
+    ApiKeyListCreateView,
+    ApiKeyDetailView,
 )
 
 urlpatterns = [
@@ -19,4 +21,8 @@ urlpatterns = [
     path('users/', AdminUserListView.as_view(), name='admin_user_list'),
     path('users/<int:pk>/appoint-judge/', AppointJudgeView.as_view(), name='appoint_judge'),
     path('appointable-judges/', AppointableJudgesView.as_view(), name='appointable_judges'),
+
+    # T4 - API keys for programmatic access
+    path('api-keys/', ApiKeyListCreateView.as_view(), name='api_key_list_create'),
+    path('api-keys/<int:pk>/', ApiKeyDetailView.as_view(), name='api_key_detail'),
 ]

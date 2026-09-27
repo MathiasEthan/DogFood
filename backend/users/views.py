@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.views import APIView
@@ -8,7 +9,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 
-from .models import User
+from .models import User, ApiKey, generate_api_key
 from .serializers import (
     UserSerializer,
     UserRegistrationSerializer,
@@ -266,3 +267,60 @@ class AppointableJudgesView(APIView):
         users = users.order_by('username')[:40]
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# --------------------------------------------------------------------------- T4: API keys
+
+def api_key_dict(key):
+    return {
+        'id': key.id,
+        'name': key.name,
+        'prefix': key.prefix,
+        'is_active': key.is_active,
+        'created_at': key.created_at,
+        'last_used_at': key.last_used_at,
+    }
+
+
+class ApiKeyListCreateView(APIView):
+    """
+    GET  -> list your own API keys (never includes the raw key - it can't be, we don't store it)
+    POST -> mint a new one; the raw key is only ever present in THIS response
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        keys = request.user.api_keys.all()
+        return Response([api_key_dict(k) for k in keys], status=status.HTTP_200_OK)
+
+    def post(self, request):
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({'name': 'Give this key a label, e.g. "CI export script".'}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_key, prefix, key_hash = generate_api_key()
+        key = ApiKey.objects.create(user=request.user, name=name, prefix=prefix, key_hash=key_hash)
+
+        payload = api_key_dict(key)
+        payload['key'] = raw_key
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class ApiKeyDetailView(APIView):
+    """DELETE revokes a key permanently. PATCH can only toggle is_active (a pause, not a rename)."""
+    permission_classes = [IsAuthenticated]
+
+    def _get_key(self, request, pk):
+        return get_object_or_404(ApiKey, pk=pk, user=request.user)
+
+    def patch(self, request, pk):
+        key = self._get_key(request, pk)
+        if 'is_active' in request.data:
+            key.is_active = bool(request.data.get('is_active'))
+            key.save(update_fields=['is_active'])
+        return Response(api_key_dict(key), status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        key = self._get_key(request, pk)
+        key.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

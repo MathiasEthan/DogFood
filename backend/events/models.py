@@ -514,3 +514,77 @@ class VoteAuditLog(models.Model):
     def __str__(self):
         who = self.voter.username if self.voter else 'Unknown'
         return f"Audit [{self.action}] by {who} at {self.timestamp}"
+
+
+def generate_webhook_secret():
+    return secrets.token_hex(32)
+
+
+class WebhookEndpoint(models.Model):
+    """
+    A URL an organizer registers to receive signed POST notifications
+    whenever something happens in one of their events (T4).
+    """
+
+    class EventType(models.TextChoices):
+        TEAM_CREATED = 'team.created', 'Team created'
+        SUBMISSION_CREATED = 'submission.created', 'Submission created'
+        SUBMISSION_UPDATED = 'submission.updated', 'Submission updated'
+        EVALUATION_SUBMITTED = 'evaluation.submitted', 'Evaluation submitted'
+        RESULTS_PUBLISHED = 'results.published', 'Results published'
+        VOTE_CAST = 'vote.cast', 'Community vote cast'
+        COMMENT_POSTED = 'comment.posted', 'Comment posted'
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='webhook_endpoints')
+    target_url = models.URLField(max_length=500, help_text="Where we POST the event payload")
+    secret = models.CharField(
+        max_length=64,
+        default=generate_webhook_secret,
+        help_text="Used to HMAC-sign every delivery so the receiver can verify it came from us",
+    )
+    subscribed_events = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of EventType values to receive; empty list means 'all events'",
+    )
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_webhooks',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def is_subscribed_to(self, event_type):
+        return not self.subscribed_events or event_type in self.subscribed_events
+
+    def __str__(self):
+        return f"Webhook -> {self.target_url} ({self.event.title})"
+
+
+class WebhookDelivery(models.Model):
+    """One attempted (or retried) POST to a WebhookEndpoint. Kept as a log for debugging/redelivery."""
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        SUCCESS = 'SUCCESS', 'Delivered'
+        FAILED = 'FAILED', 'Failed'
+
+    endpoint = models.ForeignKey(WebhookEndpoint, on_delete=models.CASCADE, related_name='deliveries')
+    event_type = models.CharField(max_length=40)
+    payload = models.JSONField(default=dict, help_text="Exact JSON body that was (or will be) sent")
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    response_status = models.PositiveIntegerField(null=True, blank=True)
+    response_body = models.TextField(blank=True, default='')
+    attempt_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Delivery [{self.status}] {self.event_type} -> {self.endpoint.target_url}"

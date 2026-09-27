@@ -19,11 +19,17 @@ from .models import (
     EvaluationScore,
     JudgeAssignment,
     EvaluationAuditLog,
+    WebhookEndpoint,
+    WebhookDelivery,
 )
 from .normalization import NormalizationEngine
 from .request_meta import client_ip, user_agent
-from .community import audit_settings_change, seeded_shuffle, snapshot_settings, viewer_seed, stream_csv, safe_filename
+from .community import (
+    audit_settings_change, seeded_shuffle, snapshot_settings, viewer_seed, stream_csv, safe_filename,
+    OrganizerOnlyMixin,
+)
 from .assignment import JudgeAssignmentEngine
+from .webhooks import dispatch_webhook, redeliver_webhook
 from .serializers import (
     EventListSerializer,
     EventDetailSerializer,
@@ -134,6 +140,14 @@ class CreateTeamView(APIView):
                 leader=user,
             )
             TeamMember.objects.create(team=team, user=user)
+
+        dispatch_webhook(event, WebhookEndpoint.EventType.TEAM_CREATED, {
+            'team_id': team.id,
+            'team_name': team.name,
+            'team_code': team.code,
+            'event_id': event.id,
+            'leader_username': user.username,
+        })
 
         return Response(
             {
@@ -304,8 +318,22 @@ class SubmitProjectView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        was_create = submission is None
         saved_submission = serializer.save(team=team, submitted_by=user, is_draft=is_draft)
         message = 'Project submission updated successfully!' if submission else 'Project submitted successfully!'
+
+        dispatch_webhook(
+            event,
+            WebhookEndpoint.EventType.SUBMISSION_CREATED if was_create else WebhookEndpoint.EventType.SUBMISSION_UPDATED,
+            {
+                'submission_id': saved_submission.id,
+                'team_id': team.id,
+                'team_name': team.name,
+                'title': saved_submission.title,
+                'is_draft': saved_submission.is_draft,
+                'event_id': event.id,
+            },
+        )
 
         return Response(
             {
@@ -836,6 +864,15 @@ class SubmitProjectEvaluationView(APIView):
                 flags=flags,
             )
 
+        dispatch_webhook(event, WebhookEndpoint.EventType.EVALUATION_SUBMITTED, {
+            'submission_id': submission.id,
+            'submission_title': submission.title,
+            'event_id': event.id,
+            'total_score': final_total,
+            'is_outlier': is_outlier,
+            'flags': flags,
+        })
+
         return Response(
             {
                 'message': 'Evaluation recorded successfully.',
@@ -981,6 +1018,11 @@ class PublishResultsView(APIView):
             published = published.lower() in ('1', 'true', 'yes')
         event.results_published = bool(published)
         event.save(update_fields=['results_published', 'updated_at'])
+        if event.results_published:
+            dispatch_webhook(event, WebhookEndpoint.EventType.RESULTS_PUBLISHED, {
+                'event_id': event.id,
+                'event_title': event.title,
+            })
         return Response({'results_published': event.results_published}, status=status.HTTP_200_OK)
 
 
@@ -1249,3 +1291,141 @@ class AdminExportEvaluationAuditCSVView(ManagerCSVView):
         header = ['Entry ID', 'Timestamp', 'Action', 'Submission ID', 'Project Title', 'Judge', 'Score Delta',
                   'Outlier', 'Flags', 'Dwell Seconds', 'IP Address', 'Scores Snapshot']
         return header, rows, 'evaluation_audit'
+
+
+# --------------------------------------------------------------------------- T4: webhooks
+
+def webhook_dict(endpoint, reveal_secret=False):
+    return {
+        'id': endpoint.id,
+        'event_id': endpoint.event_id,
+        'target_url': endpoint.target_url,
+        'subscribed_events': endpoint.subscribed_events,
+        'available_events': WebhookEndpoint.EventType.values,
+        'is_active': endpoint.is_active,
+        'created_at': endpoint.created_at,
+        'secret': endpoint.secret if reveal_secret else f"{'*' * 8}{endpoint.secret[-4:]}",
+    }
+
+
+class EventWebhooksView(OrganizerOnlyMixin, APIView):
+    """GET lists an event's webhooks; POST registers a new one."""
+
+    def get(self, request, pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        endpoints = event.webhook_endpoints.all()
+        return Response([webhook_dict(e) for e in endpoints], status=status.HTTP_200_OK)
+
+    def post(self, request, pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+
+        target_url = (request.data.get('target_url') or '').strip()
+        if not target_url:
+            return Response({'target_url': 'This field is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        subscribed_events = request.data.get('subscribed_events') or []
+        if not isinstance(subscribed_events, list):
+            return Response({'subscribed_events': 'Must be a list of event type strings.'}, status=status.HTTP_400_BAD_REQUEST)
+        valid_types = set(WebhookEndpoint.EventType.values)
+        invalid = [e for e in subscribed_events if e not in valid_types]
+        if invalid:
+            return Response(
+                {'subscribed_events': f'Unknown event type(s): {", ".join(invalid)}. Valid: {", ".join(sorted(valid_types))}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        endpoint = WebhookEndpoint.objects.create(
+            event=event,
+            target_url=target_url,
+            subscribed_events=subscribed_events,
+            created_by=request.user,
+        )
+        # The secret is only ever readable in full at creation time - like an API key.
+        return Response(webhook_dict(endpoint, reveal_secret=True), status=status.HTTP_201_CREATED)
+
+
+class EventWebhookDetailView(OrganizerOnlyMixin, APIView):
+    """PATCH toggles is_active / changes subscribed_events / target_url; DELETE removes it."""
+
+    def _get_endpoint(self, event, webhook_pk):
+        return get_object_or_404(WebhookEndpoint, pk=webhook_pk, event=event)
+
+    def patch(self, request, pk, webhook_pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        endpoint = self._get_endpoint(event, webhook_pk)
+
+        if 'target_url' in request.data:
+            endpoint.target_url = (request.data.get('target_url') or '').strip()
+        if 'is_active' in request.data:
+            endpoint.is_active = bool(request.data.get('is_active'))
+        if 'subscribed_events' in request.data:
+            subscribed_events = request.data.get('subscribed_events') or []
+            valid_types = set(WebhookEndpoint.EventType.values)
+            invalid = [e for e in subscribed_events if e not in valid_types]
+            if invalid:
+                return Response({'subscribed_events': f'Unknown event type(s): {", ".join(invalid)}'}, status=status.HTTP_400_BAD_REQUEST)
+            endpoint.subscribed_events = subscribed_events
+
+        endpoint.save()
+        return Response(webhook_dict(endpoint), status=status.HTTP_200_OK)
+
+    def delete(self, request, pk, webhook_pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        endpoint = self._get_endpoint(event, webhook_pk)
+        endpoint.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class EventWebhookDeliveriesView(OrganizerOnlyMixin, APIView):
+    """Delivery log for one webhook - what we sent, what came back, when."""
+
+    def get(self, request, pk, webhook_pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        endpoint = get_object_or_404(WebhookEndpoint, pk=webhook_pk, event=event)
+        deliveries = endpoint.deliveries.all()[:200]
+        return Response(
+            [
+                {
+                    'id': d.id,
+                    'event_type': d.event_type,
+                    'status': d.status,
+                    'response_status': d.response_status,
+                    'attempt_count': d.attempt_count,
+                    'created_at': d.created_at,
+                    'delivered_at': d.delivered_at,
+                }
+                for d in deliveries
+            ],
+            status=status.HTTP_200_OK,
+        )
+
+
+class WebhookRedeliverView(OrganizerOnlyMixin, APIView):
+    """Manually retry one logged delivery (there's no background worker to retry automatically)."""
+
+    def post(self, request, pk, webhook_pk, delivery_pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        endpoint = get_object_or_404(WebhookEndpoint, pk=webhook_pk, event=event)
+        delivery = get_object_or_404(WebhookDelivery, pk=delivery_pk, endpoint=endpoint)
+        redeliver_webhook(delivery)
+        return Response(
+            {
+                'id': delivery.id,
+                'status': delivery.status,
+                'response_status': delivery.response_status,
+                'attempt_count': delivery.attempt_count,
+            },
+            status=status.HTTP_200_OK,
+        )

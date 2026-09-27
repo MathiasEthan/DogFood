@@ -28,6 +28,10 @@ from .views import (
     AdminExportAssignmentsCSVView,
     AdminExportEvaluationAuditCSVView,
     PublishResultsView,
+    EventWebhooksView,
+    EventWebhookDetailView,
+    EventWebhookDeliveriesView,
+    WebhookRedeliverView,
 )
 from .community import (
     CommunityVoteView,
@@ -88,5 +92,11 @@ urlpatterns = [
     path('admin/teams/<int:team_pk>/members/<int:user_pk>/', AdminTeamMemberManageView.as_view(), name='admin_team_member_manage'),
     path('admin/submissions/', AdminAllSubmissionsView.as_view(), name='admin_all_submissions'),
     path('admin/submissions/<int:pk>/', AdminSubmissionManageView.as_view(), name='admin_submission_manage'),
+
+    # T4 - webhooks
+    path('<int:pk>/webhooks/', EventWebhooksView.as_view(), name='event_webhooks'),
+    path('<int:pk>/webhooks/<int:webhook_pk>/', EventWebhookDetailView.as_view(), name='event_webhook_detail'),
+    path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/', EventWebhookDeliveriesView.as_view(), name='event_webhook_deliveries'),
+    path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/<int:delivery_pk>/redeliver/', WebhookRedeliverView.as_view(), name='event_webhook_redeliver'),
 ]
 
