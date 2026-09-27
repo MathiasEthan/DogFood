@@ -140,6 +140,19 @@ On initial startup, `backend/entrypoint.sh` automatically seeds the default admi
 
 Voting rules (window, votes per user, eligibility, self-voting, live counts, comments) are set with `PATCH /api/events/admin/events/<id>/` or the **Community Voting & Results** panel on the event page; every change is written to the audit trail.
 
+### Webhooks & API Keys (T4)
+| Endpoint | Method | Permission | Description |
+|---|---|---|---|
+| `/api/events/<id>/webhooks/` | GET / POST | Organizer | List an event's webhooks; register a new one (`target_url`, optional `subscribed_events`). The signing secret is only ever returned in full on this `POST`. |
+| `/api/events/<id>/webhooks/<wid>/` | PATCH / DELETE | Organizer | Update `target_url` / `is_active` / `subscribed_events`, or remove the webhook. |
+| `/api/events/<id>/webhooks/<wid>/deliveries/` | GET | Organizer | Delivery log (status, HTTP response, attempt count) for one webhook. |
+| `/api/events/<id>/webhooks/<wid>/deliveries/<did>/redeliver/` | POST | Organizer | Manually retry one previously failed delivery. |
+| `/api/auth/api-keys/` | GET / POST | Authenticated | List your own API keys (masked); mint a new one. The raw key is only ever returned in full on this `POST`. |
+| `/api/auth/api-keys/<kid>/` | PATCH / DELETE | Owner | Pause (`is_active`) or permanently revoke a key. |
+
+Webhooks fire a signed `POST` for `team.created`, `submission.created`, `submission.updated`, `evaluation.submitted`, `results.published`, `vote.cast` and `comment.posted`. Every delivery includes an `X-DogFood-Signature: sha256=<hmac>` header — an HMAC-SHA256 of the exact request body, keyed by that endpoint's own secret — so the receiver can verify it actually came from this platform. There's no background worker in this stack, so delivery is synchronous and best-effort; failures are logged and can be redelivered by hand.
+
+API keys let an external tool call this REST API without a browser session: send `Authorization: ApiKey <key>` instead of relying on the login cookies. A key grants exactly the same permissions its owner already has everywhere else in the app — an organizer's key manages their events, nothing more.
 
 ---
 

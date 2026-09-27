@@ -20,8 +20,9 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from .models import CommunityComment, CommunityVote, Event, ProjectSubmission, TeamMember, VoteAuditLog
+from .models import CommunityComment, CommunityVote, Event, ProjectSubmission, TeamMember, VoteAuditLog, WebhookEndpoint
 from .request_meta import client_ip, user_agent
+from .webhooks import dispatch_webhook
 
 # Fields whose changes are written to the community audit trail
 VOTING_SETTING_FIELDS = [
@@ -298,6 +299,13 @@ class CommunityVoteView(APIView):
         record_audit(event, VoteAuditLog.Action.VOTED, request, submission=submission,
                      metadata={'flags': flags} if flags else {}, flagged=bool(flags))
 
+        dispatch_webhook(event, WebhookEndpoint.EventType.VOTE_CAST, {
+            'submission_id': submission.id,
+            'submission_title': submission.title,
+            'event_id': event.id,
+            'flagged': bool(flags),
+        })
+
         return Response(
             {
                 'detail': 'Vote cast successfully.',
@@ -489,6 +497,15 @@ class CommentListCreateView(APIView):
         comment = CommunityComment.objects.create(submission=submission, author=request.user, text=text)
         record_audit(event, VoteAuditLog.Action.COMMENTED, request, submission=submission,
                      metadata={'comment_id': comment.pk, 'length': len(text)})
+
+        dispatch_webhook(event, WebhookEndpoint.EventType.COMMENT_POSTED, {
+            'comment_id': comment.id,
+            'submission_id': submission.id,
+            'submission_title': submission.title,
+            'event_id': event.id,
+            'author_username': request.user.username,
+        })
+
         return Response(
             CommunityCommentSerializer(comment, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
