@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from datetime import timedelta
 
@@ -134,6 +135,23 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # T3 rate limiting (ScopedRateThrottle); keyed per user, or per IP when anonymous
+    'DEFAULT_THROTTLE_RATES': {
+        'community_votes': os.getenv('THROTTLE_COMMUNITY_VOTES', '30/min'),
+        'community_comments': os.getenv('THROTTLE_COMMUNITY_COMMENTS', '10/min'),
+        'auth': os.getenv('THROTTLE_AUTH', '20/min'),
+    },
+}
+
+# Only enable behind a trusted reverse proxy; otherwise X-Forwarded-For is spoofable.
+TRUST_X_FORWARDED_FOR = os.getenv('TRUST_X_FORWARDED_FOR', 'False').lower() == 'true'
+
+# Shared cache so throttle counters are consistent across gunicorn workers.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'django_cache',
+    }
 }
 
 # SimpleJWT Settings
@@ -170,3 +188,7 @@ CSRF_TRUSTED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
 ]
+
+# Fast password hashing for the test suite only
+if 'test' in sys.argv:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']

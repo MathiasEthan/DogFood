@@ -164,10 +164,14 @@ export default function DashboardPage() {
 
   const handleAutoAssignJudges = async (eventId: number) => {
     try {
-      const res = await api.assignJudges(eventId, 3)
+      const ev = [...organizedEvents, ...allEvents].find((e) => e.id === eventId)
+      const res = await api.assignJudges(eventId, ev?.judges_per_project ?? 3)
       setActionSuccess(
-        `Successfully allocated ${res.total_assignments_created} evaluations across ${res.total_judges} judges with zero COI violations.`
+        `Allocated ${res.total_assignments_created} evaluations across ${res.total_judges} judges (K=${res.target_k}) with zero COI violations.`
       )
+      if (res.warning) {
+        setActionError(res.warning)
+      }
       loadDashboardData()
     } catch (err: any) {
       setActionError(err.message || "Failed to auto-assign judges.")

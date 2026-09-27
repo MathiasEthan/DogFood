@@ -92,6 +92,7 @@ class JudgeAssignmentEngine:
             ]
 
         sorted_submissions = sorted(submissions, key=lambda s: len(get_viable(s)))
+        deficits: List[Dict[str, Any]] = []
 
         # Run bipartite assignment
         for sub in sorted_submissions:
@@ -106,7 +107,13 @@ class JudgeAssignmentEngine:
                         and j.id not in project_assignments[sub.id]
                     ]
                     if not relaxed:
-                        # Cannot assign without violating hard COI
+                        # Cannot assign more without violating the hard COI constraint
+                        deficits.append({
+                            'submission_id': sub.id,
+                            'title': sub.title,
+                            'assigned': len(project_assignments[sub.id]),
+                            'target': effective_k,
+                        })
                         break
                     viable = relaxed
 
@@ -152,4 +159,11 @@ class JudgeAssignmentEngine:
             'target_k': effective_k,
             'total_assignments_created': len(new_assignment_objects),
             'workload_distribution': workload_distribution,
+            'max_workload': max_workload,
+            'fully_saturated': not deficits,
+            'deficits': deficits,
+            'warning': (
+                f"{len(deficits)} project(s) could not reach {effective_k} conflict-free judges. "
+                "Appoint more judges and re-run."
+            ) if deficits else None,
         }
