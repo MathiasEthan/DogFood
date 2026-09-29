@@ -10,62 +10,7 @@
 
 DogFood is designed as a decoupled, multi-tier web application built for high concurrency, zero external runtime CDN dependencies, and verifiable integrity throughout every stage of a hackathon lifecycle.
 
-```mermaid
-graph TD
-    subgraph Clients["Clients & Consumers"]
-        Browser["Modern Browser<br/>(Organizer / Judge / Participant)"]
-        EmbedHost["Third-Party Web Host<br/>(iframe Widget Embed)"]
-        ScriptConsumer["External Automation / CI<br/>(REST API + API Key)"]
-        WebhookReceiver["External Endpoint<br/>(Signed POST Listener)"]
-    end
-
-    subgraph Edge["Edge / Reverse Proxy Tier"]
-        Nginx["Reverse Proxy / Ingress<br/>(Rate Limiting & Static Files)"]
-    end
-
-    subgraph AppTier["Application Tier"]
-        NextFrontend["Frontend Service<br/>(Next.js 16 + React 19 + Turbopack)"]
-        DjangoBackend["Backend API Service<br/>(Django 5 + Django REST Framework)"]
-    end
-
-    subgraph CoreEngines["Core Backend Engines"]
-        AuthEngine["Auth & RBAC Engine<br/>(JWT Cookie + ApiKey)"]
-        JudgingEngine["Judging & Integrity Engine<br/>(Empirical Bayes Normalization)"]
-        MatchingEngine["Assignment Engine<br/>(Constrained Bipartite Min-Degree)"]
-        AuditEngine["Audit Engine<br/>(Merkle-like Hash Chaining)"]
-        CryptoEngine["Crypto Engine<br/>(Canonical HMAC-SHA256 Signatures)"]
-        PortabilityEngine["Portability Engine<br/>(JSON Archive + CSV Parsing)"]
-    end
-
-    subgraph Persistence["Persistence Tier"]
-        DB[(PostgreSQL 16 / SQLite Fallback<br/>ACID Relational Storage)]
-        MediaStorage["Local Media Volume<br/>(/app/media/ & Banners)"]
-    end
-
-    Browser -->|HTTPS / WSS| Nginx
-    EmbedHost -->|iframe / postMessage| NextFrontend
-    ScriptConsumer -->|REST API with ApiKey| Nginx
-    Nginx -->|SSR / Hydration| NextFrontend
-    Nginx -->|API Reverse Proxy| DjangoBackend
-
-    DjangoBackend --> AuthEngine
-    DjangoBackend --> JudgingEngine
-    DjangoBackend --> MatchingEngine
-    DjangoBackend --> AuditEngine
-    DjangoBackend --> CryptoEngine
-    DjangoBackend --> PortabilityEngine
-
-    AuthEngine --> DB
-    JudgingEngine --> DB
-    MatchingEngine --> DB
-    AuditEngine --> DB
-    CryptoEngine --> DB
-    PortabilityEngine --> DB
-    DjangoBackend --> MediaStorage
-
-    CryptoEngine -.->|HMAC-SHA256 Delivery| WebhookReceiver
-```
-
+![](diagram/image_5.png)
 ---
 
 ## 2. Authentication, Authorization & RBAC Architecture
@@ -84,32 +29,8 @@ DogFood implements a dual authentication scheme allowing seamless, secure browse
    - Four distinct user roles: `participant`, `judge`, `organizer`, and `admin`.
    - Role isolation is strictly enforced at the database and API view levels. Judges cannot modify team records; participants cannot view uncompleted scorecards or audit logs.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Client as Browser Client
-    actor Script as External Script
-    participant Next as Next.js 16 Frontend
-    participant API as Django REST Backend
-    participant DB as Relational Database
 
-    %% Browser Flow
-    Note over Client,API: Browser Session Flow (JWT in HTTP-only Cookie)
-    Client->>Next: POST /login (username, password)
-    Next->>API: Forward credentials
-    API->>DB: Verify bcrypt password hash
-    DB-->>API: User authenticated (role verified)
-    API-->>Next: Set-Cookie: access_token, refresh_token (HttpOnly, SameSite=Lax)
-    Next-->>Client: 200 OK (Render Authenticated Shell)
-
-    %% Script Flow
-    Note over Script,API: Programmatic Flow (Hashed API Key Header)
-    Script->>API: GET /api/events/1/admin/export/bulk-archive/<br/>Header: Authorization: ApiKey dfk_secret...
-    API->>API: Extract prefix & compute SHA-256(raw_key)
-    API->>DB: Query ApiKey by (prefix, key_hash) & verify user.role
-    DB-->>API: Valid Organizer Key
-    API-->>Script: 200 OK (Lossless JSON Archive)
-```
+![](diagram/image_4.png)
 
 ---
 
@@ -117,51 +38,7 @@ sequenceDiagram
 
 An event advances through distinct phases, enforcing strict business rules at each transition:
 
-```mermaid
-stateDiagram-v2
-    [*] --> Draft : Organizer creates event
-
-    state Draft {
-        [*] --> Configuring
-        Configuring --> RubricsDefined : Add weighted rubrics
-        RubricsDefined --> TracksConfigured : Add tracks & prizes
-    }
-
-    Draft --> RegistrationOpen : Published by Organizer
-    
-    state RegistrationOpen {
-        [*] --> TeamFormation
-        TeamFormation --> MemberJoined : Join code verification
-        MemberJoined --> TeamFull : Max team size enforced
-    }
-
-    RegistrationOpen --> HackingActive : start_date reached
-    
-    state HackingActive {
-        [*] --> DraftingProject
-        DraftingProject --> SubmittingProject : Leader submits details
-        SubmittingProject --> SubmissionLocked : end_date deadline passes
-    }
-
-    HackingActive --> EvaluationPhase : end_date passed
-
-    state EvaluationPhase {
-        [*] --> BipartiteMatching : Algorithmic K-Assignment
-        BipartiteMatching --> PeerEvaluation : Judges evaluate blind
-        PeerEvaluation --> AnomalyAuditing : Real-time outlier flags
-        BipartiteMatching --> CommunityVoting : Parallel voting window (T3)
-    }
-
-    EvaluationPhase --> ResultsPublished : Organizer signs off & publishes
-    
-    state ResultsPublished {
-        [*] --> LeaderboardUnlocked : Normalization visible
-        LeaderboardUnlocked --> CertificatesIssued : Vector SVGs generated
-        CertificatesIssued --> JudgeRecordsSigned : HMAC-SHA256 finalized
-    }
-
-    ResultsPublished --> [*] : Event Archived / Exported
-```
+![](diagram/image_3.png)
 
 ---
 
@@ -187,19 +64,8 @@ When evaluations are sparse, raw score averaging creates structural bias (harsh 
 - Computes standardized Z-scores $z_{j,i} = \frac{s_{j,i} - \hat{\mu}_j}{\hat{\sigma}_j}$.
 - Rescales normalized marks back onto a calibrated $[1.0, 10.0]$ scale and calculates the standard error of the mean ($SE_i$).
 
-```mermaid
-flowchart TD
-    RawScores["Raw Rubric Marks from Judge<br/>(Rubrics 1..M with Weights W_k)"] --> WeightedSum["Weighted Evaluation Total<br/>s_{j,i} = sum(w_k * score_k)"]
-    WeightedSum --> GlobalPrior["Global Event Baseline Calculation<br/>Prior Mean mu_0, Prior Variance sigma_0^2"]
-    
-    GlobalPrior --> BayesShrinkage["Empirical Bayes Parameter Shrinkage<br/>mu_j_hat = (n_j * mean_j + m * mu_0) / (n_j + m)<br/>sigma_j_hat computed with m=3.0"]
-    
-    BayesShrinkage --> ZScore["Compute Standard Score<br/>z_{j,i} = (s_{j,i} - mu_j_hat) / sigma_j_hat"]
-    
-    ZScore --> Rescale["Clamped Rescaling to [1.0, 10.0]<br/>S_norm = clamp(mu_0 + z * sigma_0, 1.0, 10.0)"]
-    
-    Rescale --> Aggregation["Project Standings Aggregate<br/>Final Score = mean(S_norm)<br/>Standard Error SE = std_dev / sqrt(K)"]
-```
+
+![](diagram/image.png)
 
 ### 4.4 Merkle-Style Chained Community Vote Audit Log (T3)
 To ensure community votes cannot be repudiated, altered, or injected by malicious actors or direct database tampering:
@@ -215,30 +81,7 @@ DogFood provides cryptographic proof of achievement and participation:
 - **Vector SVG Generation:** Standalone SVG certificates generated server-side with embedded verification hashes, ornate guilloche vectors, and gold seals.
 - **Judge Participation Records:** Appointed judges receive a signed record containing review count, rubric marks, average score given, and activity timestamps, publicly verifiable at `/verify/judge/<record_id>/`.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Organizer
-    participant API as Django Backend
-    participant Signer as Signing Engine (signing.py)
-    participant DB as Database
-    actor Public as Public Verifier / Third Party
-
-    Organizer->>API: POST /api/events/1/admin/certificates/generate/
-    API->>API: Calculate official winners & judge activity
-    API->>Signer: Canonical JSON(payload)
-    Signer->>Signer: Compute SHA-256 Digest
-    Signer->>Signer: Compute HMAC-SHA256(Digest, SECRET_KEY)
-    Signer-->>API: Verification Code & Signature Hash
-    API->>DB: Save Certificate & JudgeParticipationRecord
-    API-->>Organizer: 201 Created (Certificates & Records generated)
-
-    Note over Public,API: Public Unauthenticated Verification
-    Public->>API: GET /api/certificates/CERT-XXXX-XXXX/
-    API->>Signer: Verify stored signature against canonical fields
-    Signer-->>API: Valid & Untampered
-    API-->>Public: 200 OK { is_valid: true, recipient: "Alice", award: "1st Place" }
-```
+![](diagram/image_1.png)
 
 ### 4.6 Embeddable Gallery Widget & Cross-Origin Protocol (T4 Stretch)
 - **Standalone Embed Endpoint:** [`/embed/events/<id>/gallery/`](frontend/app/embed/events/[id]/gallery/page.tsx) renders a headless, responsive project gallery free from site navigation or cookie dependencies.
@@ -263,27 +106,7 @@ To ensure organizers have full data sovereignty:
 
 DogFood provides real-time event dispatching covering every action reachable via the UI:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as User / Organizer
-    participant API as Django REST Framework
-    participant Dispatcher as Webhook Dispatcher
-    participant DB as Database
-    actor HookServer as External Consumer Server
-
-    User->>API: Action (e.g. Join Team, Submit Evaluation, Issue Certs)
-    API->>DB: Commit database transaction
-    API->>Dispatcher: dispatch_webhook(event, event_type, payload)
-    Dispatcher->>DB: Query active WebhookEndpoint for event & event_type
-    loop For Each Endpoint
-        Dispatcher->>Dispatcher: Compute HMAC-SHA256(payload, endpoint.secret)
-        Dispatcher->>HookServer: POST target_url<br/>Header: X-DogFood-Signature: sha256=...<br/>Header: X-DogFood-Event: event_type
-        HookServer-->>Dispatcher: HTTP Response (e.g. 200 OK)
-        Dispatcher->>DB: Record WebhookDelivery log (status, status_code, timestamp)
-    end
-    API-->>User: HTTP Response
-```
+![](diagram/image_2.png)
 
 ---
 

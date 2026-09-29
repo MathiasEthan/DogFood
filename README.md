@@ -4,55 +4,22 @@
 
 ---
 
-## 📑 Core Documentation Index
+## Core Documentation Index
 
 For in-depth technical analysis, system design, and mathematical proofs, consult our dedicated specifications:
 
 | Specification | Description |
 | :--- | :--- |
-| 🏗️ **[ARCHITECTURE.md](ARCHITECTURE.md)** | Full system architecture, request lifecycles, auth models, and component topology. |
-| 🗄️ **[DATA-MODEL.md](DATA-MODEL.md)** | Complete Entity-Relationship specifications across all 21 models with constraints. |
-| ⚖️ **[JUDGING.md](JUDGING.md)** | Empirical Bayes regularized Z-score normalization, anti-COI bipartite matching, and anomaly detection. |
-| 🛡️ **[COMMUNITY.md](COMMUNITY.md)** | Sybil-resistant community voting, rate limiting, and cryptographic hash-chained audit trails. |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | Full system architecture, request lifecycles, auth models, and component topology. |
+| **[DATA-MODEL.md](DATA-MODEL.md)** | Complete Entity-Relationship specifications across all 21 models with constraints. |
+| **[JUDGING.md](JUDGING.md)** | Empirical Bayes regularized Z-score normalization, anti-COI bipartite matching, and anomaly detection. |
+| **[COMMUNITY.md](COMMUNITY.md)** | Sybil-resistant community voting, rate limiting, and cryptographic hash-chained audit trails. |
 
 ---
 
-## 🌟 Platform Capabilities by Tier
+## Platform Capabilities by Tier
 
-```mermaid
-graph TD
-    subgraph T1["Tier 1: Core Platform"]
-        Auth["JWT Cookie + ApiKey RBAC"]
-        Teams["Team Formation & Code Joining"]
-        Submissions["Deadline-Gated Submissions"]
-        Gallery["Searchable & Filtered Gallery"]
-    end
-
-    subgraph T2["Tier 2: Judging Integrity"]
-        Rubrics["Custom Weighted Rubrics"]
-        Bipartite["Constrained Min-Degree Assignment"]
-        Norm["Empirical Bayes Z-Score Normalization"]
-        Audit["Real-time Anomaly Detection"]
-    end
-
-    subgraph T3["Tier 3: Community & Audit"]
-        Voting["Sybil-Resistant Community Ballots"]
-        HashChain["Cryptographic Hash-Chained Audit Log"]
-        Moderation["Community Comments & Vote Voiding"]
-    end
-
-    subgraph T4["Tier 4: Extensibility & Portability"]
-        Webhooks["Signed Event Webhook Dispatches"]
-        Certs["Vector SVG Certificates (HMAC-SHA256)"]
-        JudgeRecords["Signed Public Judge Credentials"]
-        Embed["Headless Responsive Embed Widget"]
-        Portability["Lossless JSON Archive & CSV Ingestion"]
-    end
-
-    T1 --> T2
-    T2 --> T3
-    T3 --> T4
-```
+![](diagram/image_10.png)
 
 ### 1. Tier 1: Core Event Management & Participant Portals
 - **Role-Based Access Control:** Strict role isolation across `participant`, `judge`, `organizer`, and `admin`.
@@ -79,7 +46,7 @@ graph TD
 
 ---
 
-## 🚀 Startup & Execution Options
+## Startup & Execution Options
 
 ### Option 1: Full Docker Compose (Recommended)
 
@@ -121,7 +88,7 @@ On initial startup, `backend/entrypoint.sh` provisions default administrator acc
 
 ---
 
-## 📡 Comprehensive REST API Directory
+## Comprehensive REST API Directory
 
 ### Authentication & API Keys
 | Endpoint | Method | Permission | Description |
@@ -192,7 +159,7 @@ On initial startup, `backend/entrypoint.sh` provisions default administrator acc
 
 ---
 
-## 🧪 Automated Testing & Verification
+## Automated Testing & Verification
 
 The platform is covered by an automated test suite verifying all cryptographic operations, role isolation rules, normalization formulas, and data portability:
 

@@ -8,289 +8,131 @@
 
 ## 1. Complete Entity-Relationship Diagram (ERD)
 
-The following Mermaid diagram maps all 21 relational and cryptographic entities, illustrating their cardinalities and foreign key dependencies:
+![](diagram/image_6.png)
+
+The following diagrams map all 21 relational and cryptographic entities, illustrating their cardinalities and foreign key dependencies.
+
+### Option A: Entity-Relationship Diagram (`erDiagram`)
 
 ```mermaid
 erDiagram
-    %% Identity & Authentication
-    USER ||--o{ API_KEY : "owns"
-    USER ||--o{ EVENT : "creates (organizer)"
-    USER }o--o{ EVENT : "judges (appointed)"
-    USER ||--o{ TEAM : "leads"
-    USER ||--o{ TEAM_MEMBER : "participates as"
-    USER ||--o{ PROJECT_SUBMISSION : "submits"
-    USER ||--o{ PROJECT_EVALUATION : "judges"
-    USER ||--o{ JUDGE_ASSIGNMENT : "assigned to"
-    USER ||--o{ COMMUNITY_VOTE : "casts"
-    USER ||--o{ COMMUNITY_COMMENT : "authors"
-    USER ||--o{ JUDGE_PARTICIPATION_RECORD : "earns credential"
+    USER ||--o{ API_KEY : owns
+    USER ||--o{ EVENT : creates
+    USER }o--o{ EVENT : judges
+    USER ||--o{ TEAM : leads
+    USER ||--o{ TEAM_MEMBER : participates
+    USER ||--o{ PROJECT_SUBMISSION : submits
+    USER ||--o{ PROJECT_EVALUATION : evaluates
+    USER ||--o{ JUDGE_ASSIGNMENT : assigned
+    USER ||--o{ COMMUNITY_VOTE : votes
+    USER ||--o{ COMMUNITY_COMMENT : comments
+    USER ||--o{ JUDGE_PARTICIPATION_RECORD : earns
 
-    %% Core Event Hierarchy
-    EVENT ||--o{ EVENT_PHASE : "contains"
-    EVENT ||--o{ TRACK : "categorizes with"
-    EVENT ||--o{ PRIZE : "awards"
-    EVENT ||--o{ EVENT_RUBRIC : "evaluated by"
-    EVENT ||--o{ TEAM : "hosts"
-    EVENT ||--o{ WEBHOOK_ENDPOINT : "configures"
-    EVENT ||--o{ CERTIFICATE : "issues"
-    EVENT ||--o{ VOTE_AUDIT_LOG : "records"
-    EVENT ||--o{ JUDGE_PARTICIPATION_RECORD : "certifies"
+    EVENT ||--o{ EVENT_PHASE : contains
+    EVENT ||--o{ TRACK : categorizes
+    EVENT ||--o{ PRIZE : awards
+    EVENT ||--o{ EVENT_RUBRIC : evaluates
+    EVENT ||--o{ TEAM : hosts
+    EVENT ||--o{ WEBHOOK_ENDPOINT : configures
+    EVENT ||--o{ CERTIFICATE : issues
+    EVENT ||--o{ VOTE_AUDIT_LOG : audits
+    EVENT ||--o{ JUDGE_PARTICIPATION_RECORD : certifies
 
-    %% Teams & Submissions
-    TEAM ||--o{ TEAM_MEMBER : "comprises"
-    TEAM ||--o| PROJECT_SUBMISSION : "builds (1-to-1)"
-    TRACK ||--o{ PROJECT_SUBMISSION : "tagged under"
+    TEAM ||--o{ TEAM_MEMBER : comprises
+    TEAM ||--o| PROJECT_SUBMISSION : builds
+    TRACK ||--o{ PROJECT_SUBMISSION : tagged
 
-    %% Judging & Evaluations
-    PROJECT_SUBMISSION ||--o{ JUDGE_ASSIGNMENT : "queued for"
-    PROJECT_SUBMISSION ||--o{ PROJECT_EVALUATION : "evaluated in"
-    PROJECT_SUBMISSION ||--o{ COMMUNITY_VOTE : "receives votes"
-    PROJECT_SUBMISSION ||--o{ COMMUNITY_COMMENT : "discussed via"
+    PROJECT_SUBMISSION ||--o{ JUDGE_ASSIGNMENT : queued
+    PROJECT_SUBMISSION ||--o{ PROJECT_EVALUATION : receives
+    PROJECT_SUBMISSION ||--o{ COMMUNITY_VOTE : receives_votes
+    PROJECT_SUBMISSION ||--o{ COMMUNITY_COMMENT : discussed
 
-    PROJECT_EVALUATION ||--o{ EVALUATION_SCORE : "scored across"
-    EVENT_RUBRIC ||--o{ EVALUATION_SCORE : "weighted against"
-    PROJECT_EVALUATION ||--o{ EVALUATION_AUDIT_LOG : "tracked by"
+    PROJECT_EVALUATION ||--o{ EVALUATION_SCORE : scores
+    EVENT_RUBRIC ||--o{ EVALUATION_SCORE : weights
+    PROJECT_EVALUATION ||--o{ EVALUATION_AUDIT_LOG : tracks
 
-    %% Webhooks & Deliveries
-    WEBHOOK_ENDPOINT ||--o{ WEBHOOK_DELIVERY : "dispatches"
+    WEBHOOK_ENDPOINT ||--o{ WEBHOOK_DELIVERY : dispatches
+```
 
-    USER {
-        int id PK
-        string username UK
-        string email UK
-        string role "participant | judge | organizer | admin"
-        string password
-        string first_name
-        string last_name
-        text bio
-        string organization
-        datetime created_at
-        datetime updated_at
-    }
+### Option B: Universal Relational Map (`graph TD`)
 
-    API_KEY {
-        int id PK
-        int user_id FK
-        string name
-        string prefix "indexable prefix"
-        string key_hash "SHA-256 hash"
-        boolean is_active
-        datetime last_used_at
-        datetime created_at
-    }
+*(Guaranteed compatible with all Mermaid renderers and lightweight browser viewers)*
 
-    EVENT {
-        int id PK
-        string title
-        text description
-        string banner
-        datetime start_date
-        datetime end_date
-        string mode "virtual | in_person | hybrid"
-        string location
-        string prize_pool
-        int max_team_size
-        int created_by_id FK
-        boolean require_github_url
-        boolean require_demo_url
-        boolean require_presentation
-        text submission_guidelines
-        datetime community_voting_start
-        datetime community_voting_end
-        boolean show_community_voting_results
-        int votes_per_user
-        string voting_eligibility "any | registered"
-        boolean allow_self_vote
-        boolean comments_enabled
-        int judges_per_project "target reviews K"
-        boolean results_published
-        datetime created_at
-        datetime updated_at
-    }
+```mermaid
+graph TD
+    subgraph Identity["Identity & Auth"]
+        User["User<br/>(id, username, email, role)"]
+        ApiKey["ApiKey<br/>(id, user_id, prefix, key_hash)"]
+    end
 
-    EVENT_PHASE {
-        int id PK
-        int event_id FK
-        string title
-        datetime start_date
-        datetime end_date
-    }
+    subgraph EventDomain["Event Management"]
+        Event["Event<br/>(id, title, dates, rules)"]
+        EventPhase["EventPhase<br/>(id, event_id, title)"]
+        Track["Track<br/>(id, event_id, title)"]
+        Prize["Prize<br/>(id, event_id, amount)"]
+        Rubric["EventRubric<br/>(id, event_id, weight)"]
+    end
 
-    TRACK {
-        int id PK
-        int event_id FK
-        string title
-        text description
-    }
+    subgraph TeamsSubmissions["Teams & Deliverables"]
+        Team["Team<br/>(id, event_id, code, leader_id)"]
+        TeamMember["TeamMember<br/>(id, team_id, user_id)"]
+        Submission["ProjectSubmission<br/>(id, team_id, title, urls)"]
+    end
 
-    PRIZE {
-        int id PK
-        int event_id FK
-        string title
-        string amount
-        text description
-    }
+    subgraph JudgingTier["Judging & Scoring"]
+        Assignment["JudgeAssignment<br/>(id, judge_id, submission_id)"]
+        Evaluation["ProjectEvaluation<br/>(id, judge_id, total_score)"]
+        Score["EvaluationScore<br/>(id, evaluation_id, rubric_id)"]
+        EvalAudit["EvaluationAuditLog<br/>(id, evaluation_id, action)"]
+    end
 
-    TEAM {
-        int id PK
-        int event_id FK
-        string name
-        string code UK "e.g. HACK-XXXX"
-        int leader_id FK
-        datetime created_at
-    }
+    subgraph CommunityTier["Community & Voting"]
+        Vote["CommunityVote<br/>(id, voter_id, submission_id)"]
+        Comment["CommunityComment<br/>(id, author_id, text)"]
+        VoteAudit["VoteAuditLog<br/>(id, prev_hash, entry_hash)"]
+    end
 
-    TEAM_MEMBER {
-        int id PK
-        int team_id FK
-        int user_id FK
-        datetime joined_at
-    }
+    subgraph Extensibility["Webhooks & Credentials"]
+        Webhook["WebhookEndpoint<br/>(id, event_id, target_url)"]
+        Delivery["WebhookDelivery<br/>(id, endpoint_id, status)"]
+        Cert["Certificate<br/>(id, code, signature)"]
+        JudgeRecord["JudgeParticipationRecord<br/>(id, record_id, signature)"]
+    end
 
-    PROJECT_SUBMISSION {
-        int id PK
-        int team_id FK,UK "One-to-one constraint"
-        string title
-        string tagline
-        text problem_statement
-        text solution_description
-        string github_url
-        string demo_url
-        string presentation_url
-        string presentation_file
-        string tech_stack
-        int track_id FK
-        boolean is_draft
-        int submitted_by_id FK
-        datetime created_at
-        datetime updated_at
-    }
+    User -->|owns| ApiKey
+    User -->|organizes| Event
+    User -->|appointed judge| Event
+    User -->|leads| Team
+    User -->|member of| TeamMember
+    Team -->|comprises| TeamMember
+    Team -->|submits 1:1| Submission
+    Track -->|categorizes| Submission
 
-    EVENT_RUBRIC {
-        int id PK
-        int event_id FK
-        string title
-        text description
-        decimal weight "percentage (e.g. 25.0)"
-        int max_score "default 10"
-    }
+    Event -->|contains| EventPhase
+    Event -->|offers| Track
+    Event -->|awards| Prize
+    Event -->|judged via| Rubric
+    Event -->|hosts| Team
+    Event -->|configures| Webhook
+    Event -->|issues| Cert
+    Event -->|audited by| VoteAudit
+    Event -->|certifies| JudgeRecord
 
-    JUDGE_ASSIGNMENT {
-        int id PK
-        int judge_id FK
-        int submission_id FK
-        datetime assigned_at
-        boolean is_completed
-    }
+    User -->|assigned to| Assignment
+    Submission -->|queued for| Assignment
+    User -->|submits scorecard| Evaluation
+    Submission -->|evaluated in| Evaluation
+    Evaluation -->|details| Score
+    Rubric -->|weights| Score
+    Evaluation -->|tracked in| EvalAudit
 
-    PROJECT_EVALUATION {
-        int id PK
-        int submission_id FK
-        int judge_id FK
-        decimal total_score
-        text feedback
-        datetime created_at
-        datetime updated_at
-    }
+    User -->|casts| Vote
+    Submission -->|receives| Vote
+    User -->|writes| Comment
+    Submission -->|discussed in| Comment
 
-    EVALUATION_SCORE {
-        int id PK
-        int evaluation_id FK
-        int rubric_id FK
-        decimal score
-    }
-
-    EVALUATION_AUDIT_LOG {
-        int id PK
-        int evaluation_id FK
-        int judge_id FK
-        string action "created | updated | flagged"
-        json old_scores
-        json new_scores
-        text reason
-        datetime timestamp
-    }
-
-    COMMUNITY_VOTE {
-        int id PK
-        int submission_id FK
-        int voter_id FK
-        string ip_address
-        string user_agent
-        boolean is_void
-        string void_reason
-        datetime created_at
-    }
-
-    COMMUNITY_COMMENT {
-        int id PK
-        int submission_id FK
-        int author_id FK
-        text text
-        datetime created_at
-        datetime updated_at
-    }
-
-    VOTE_AUDIT_LOG {
-        int id PK
-        int event_id FK
-        datetime timestamp
-        string action "vote_cast | vote_withdrawn | vote_voided"
-        int submission_id FK
-        int user_id FK
-        string ip_address
-        boolean flagged
-        json metadata
-        string prev_hash "Merkle chain link"
-        string entry_hash "SHA-256 digest"
-    }
-
-    WEBHOOK_ENDPOINT {
-        int id PK
-        int event_id FK
-        string target_url
-        json subscribed_events
-        string secret "HMAC secret"
-        boolean is_active
-        datetime created_at
-        datetime updated_at
-    }
-
-    WEBHOOK_DELIVERY {
-        int id PK
-        int endpoint_id FK
-        string event_type
-        json payload
-        int response_status
-        text response_body
-        string status "success | failure"
-        int attempt_count
-        datetime created_at
-    }
-
-    CERTIFICATE {
-        int id PK
-        int event_id FK
-        string recipient_name
-        string recipient_email
-        string role "winner | participant | judge"
-        string title
-        string award_title
-        string certificate_code UK "e.g. CERT-XXXX-XXXX"
-        string signature "HMAC-SHA256"
-        datetime issued_at
-    }
-
-    JUDGE_PARTICIPATION_RECORD {
-        int id PK
-        string record_id UK "UUIDv4 string"
-        int judge_id FK
-        int event_id FK
-        json evaluation_telemetry
-        string canonical_digest "SHA-256"
-        string signature "HMAC-SHA256"
-        datetime issued_at
-    }
+    Webhook -->|dispatches| Delivery
+    User -->|earns| JudgeRecord
 ```
 
 ---
