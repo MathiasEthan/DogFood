@@ -204,6 +204,18 @@ class JoinTeamView(APIView):
         with transaction.atomic():
             TeamMember.objects.create(team=team, user=user)
 
+        dispatch_webhook(
+            event,
+            WebhookEndpoint.EventType.TEAM_JOINED,
+            {
+                'event_id': event.id,
+                'team_id': team.id,
+                'team_name': team.name,
+                'user_id': user.id,
+                'username': user.username,
+            },
+        )
+
         return Response(
             {
                 'message': f'Successfully joined team "{team.name}"!',
@@ -240,7 +252,32 @@ class LeaveTeamView(APIView):
                 else:
                     # No members left, disband team
                     team.delete()
+                    dispatch_webhook(
+                        event,
+                        WebhookEndpoint.EventType.TEAM_LEFT,
+                        {
+                            'event_id': event.id,
+                            'team_id': team.id,
+                            'team_name': team.name,
+                            'user_id': user.id,
+                            'username': user.username,
+                            'disbanded': True,
+                        },
+                    )
                     return Response({'message': 'You left and disbanded the team.'}, status=status.HTTP_200_OK)
+
+        dispatch_webhook(
+            event,
+            WebhookEndpoint.EventType.TEAM_LEFT,
+            {
+                'event_id': event.id,
+                'team_id': team.id,
+                'team_name': team.name,
+                'user_id': user.id,
+                'username': user.username,
+                'disbanded': False,
+            },
+        )
 
         return Response({'message': f'You have left team "{team.name}".'}, status=status.HTTP_200_OK)
 
@@ -657,6 +694,16 @@ class EventRubricsManageView(APIView):
         serializer = EventRubricSerializer(data=request.data)
         if serializer.is_valid():
             rubric = serializer.save(event=event)
+            dispatch_webhook(
+                event,
+                WebhookEndpoint.EventType.RUBRICS_UPDATED,
+                {
+                    'event_id': event.id,
+                    'action': 'created',
+                    'rubric_id': rubric.id,
+                    'rubric_title': rubric.title,
+                },
+            )
             return Response(EventRubricSerializer(rubric).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -676,6 +723,15 @@ class EventRubricsManageView(APIView):
         rubric_id = rubric_pk or request.data.get('rubric_id')
         rubric = get_object_or_404(EventRubric, pk=rubric_id, event=event)
         rubric.delete()
+        dispatch_webhook(
+            event,
+            WebhookEndpoint.EventType.RUBRICS_UPDATED,
+            {
+                'event_id': event.id,
+                'action': 'deleted',
+                'rubric_id': rubric_id,
+            },
+        )
         return Response({'message': 'Rubric removed successfully.'}, status=status.HTTP_200_OK)
 
 
@@ -1429,3 +1485,269 @@ class WebhookRedeliverView(OrganizerOnlyMixin, APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+# --------------------------------------------------------------------------- T4 Stretch: Certificates, Records, Portability
+
+from .certificates import generate_certificate_svg, issue_event_certificates
+from .portability import export_event_archive, import_event_archive, import_teams_csv
+
+
+class GenerateCertificatesView(OrganizerOnlyMixin, APIView):
+    """POST /api/events/<id>/admin/certificates/generate/ - Mints certificates and signed judge records."""
+
+    def post(self, request, pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        certs = issue_event_certificates(event, issued_by=request.user)
+        return Response(
+            {
+                'message': f'Successfully generated {len(certs)} certificate(s) for {event.title}.',
+                'certificates_count': len(certs),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class EventCertificatesListView(OrganizerOnlyMixin, APIView):
+    """GET /api/events/<id>/certificates/ - Lists all issued certificates for the event."""
+
+    def get(self, request, pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        certs = event.certificates.all()
+        return Response(
+            [
+                {
+                    'id': c.id,
+                    'code': c.certificate_code,
+                    'recipient_name': c.recipient_name,
+                    'role': c.role,
+                    'title': c.title,
+                    'award_title': c.award_title,
+                    'issued_at': c.issued_at,
+                    'is_valid': c.is_valid_signature(),
+                }
+                for c in certs
+            ],
+            status=status.HTTP_200_OK,
+        )
+
+
+class MyCertificatesListView(APIView):
+    """GET /api/events/<id>/my-certificates/ - Returns certificates for current user / their team."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        membership = TeamMember.objects.filter(team__event=event, user=request.user).first()
+        my_team = membership.team if membership else None
+
+        from django.db.models import Q
+        q = Q(recipient_user=request.user)
+        if my_team:
+            q |= Q(recipient_team=my_team)
+
+        certs = event.certificates.filter(q)
+        return Response(
+            [
+                {
+                    'id': c.id,
+                    'code': c.certificate_code,
+                    'recipient_name': c.recipient_name,
+                    'role': c.role,
+                    'title': c.title,
+                    'award_title': c.award_title,
+                    'issued_at': c.issued_at,
+                    'download_url': f'/api/certificates/{c.certificate_code}/download/',
+                }
+                for c in certs
+            ],
+            status=status.HTTP_200_OK,
+        )
+
+
+class PublicCertificateDetailView(APIView):
+    """GET /api/certificates/<code_or_id>/ - Public verification of certificate authenticity."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, code):
+        from .models import Certificate
+        cert = Certificate.objects.filter(certificate_code__iexact=code).select_related('event').first()
+        if not cert and code.isdigit():
+            cert = Certificate.objects.filter(pk=int(code)).select_related('event').first()
+        if not cert:
+            return Response({'detail': 'Certificate not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        is_valid = cert.is_valid_signature()
+        return Response(
+            {
+                'code': cert.certificate_code,
+                'is_valid': is_valid,
+                'recipient_name': cert.recipient_name,
+                'role': cert.role,
+                'title': cert.title,
+                'award_title': cert.award_title,
+                'event_id': cert.event_id,
+                'event_title': cert.event.title,
+                'issued_at': cert.issued_at,
+                'signature': cert.signature,
+                'metadata': cert.metadata,
+                'download_url': f'/api/certificates/{cert.certificate_code}/download/',
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class DownloadCertificateSVGView(APIView):
+    """GET /api/certificates/<code_or_id>/download/ - Returns printable standalone SVG."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, code):
+        from .models import Certificate
+        from django.http import HttpResponse
+        cert = Certificate.objects.filter(certificate_code__iexact=code).select_related('event').first()
+        if not cert and code.isdigit():
+            cert = Certificate.objects.filter(pk=int(code)).select_related('event').first()
+        if not cert:
+            return Response({'detail': 'Certificate not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        svg_content = generate_certificate_svg(cert)
+        resp = HttpResponse(svg_content, content_type='image/svg+xml')
+        resp['Content-Disposition'] = f'attachment; filename="certificate_{cert.certificate_code}.svg"'
+        return resp
+
+
+class PublicJudgeRecordVerifyView(APIView):
+    """GET /api/judges/records/<record_id>/verify/ - Publicly verifiable signed judge record."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, record_id):
+        from .models import JudgeParticipationRecord
+        rec = JudgeParticipationRecord.objects.filter(record_id__iexact=record_id).select_related('event', 'judge').first()
+        if not rec:
+            return Response({'detail': 'Judge record not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        is_valid = rec.is_valid_signature()
+        payload = rec.build_canonical_payload()
+        return Response(
+            {
+                'record_id': rec.record_id,
+                'is_valid': is_valid,
+                'signature_algorithm': 'HMAC-SHA256',
+                'signature': rec.signature,
+                'canonical_digest': rec.canonical_digest,
+                'record': payload,
+                'verified_at': timezone.now().isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class MyJudgeRecordView(APIView):
+    """GET /api/events/<id>/my-judge-record/ - Authenticated judge retrieves their signed record."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        from .models import JudgeParticipationRecord
+        rec = JudgeParticipationRecord.objects.filter(event=event, judge=request.user).first()
+        if not rec:
+            return Response({'detail': 'No judge record found for this event.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            {
+                'record_id': rec.record_id,
+                'is_valid': rec.is_valid_signature(),
+                'signature': rec.signature,
+                'canonical_digest': rec.canonical_digest,
+                'record': rec.build_canonical_payload(),
+                'verification_url': f'/verify/judge/{rec.record_id}',
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class BulkEventExportView(OrganizerOnlyMixin, APIView):
+    """GET /api/events/<id>/admin/export/bulk-archive/ - Lossless event JSON export with SHA-256 checksum."""
+
+    def get(self, request, pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+
+        archive = export_event_archive(event)
+        if request.GET.get('download') == '1':
+            from django.http import HttpResponse
+            content = json.dumps(archive, indent=2, default=str)
+            resp = HttpResponse(content, content_type='application/json')
+            resp['Content-Disposition'] = f'attachment; filename="event_{event.id}_archive.json"'
+            return resp
+
+        return Response(archive, status=status.HTTP_200_OK)
+
+
+class BulkEventImportView(APIView):
+    """POST /api/events/admin/import/bulk-archive/ - Recreates an event from an exported JSON archive."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role not in ['organizer', 'admin'] and not request.user.is_superuser:
+            return Response({'detail': 'Only organizers or admins can import events.'}, status=status.HTTP_403_FORBIDDEN)
+
+        archive_data = None
+        if 'archive_file' in request.FILES:
+            try:
+                raw_bytes = request.FILES['archive_file'].read()
+                archive_data = json.loads(raw_bytes.decode('utf-8'))
+            except Exception as e:
+                return Response({'detail': f'Failed to parse archive JSON file: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        elif request.data:
+            archive_data = request.data
+
+        if not archive_data or not isinstance(archive_data, dict):
+            return Response({'detail': 'Invalid or empty archive data.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            imported_event = import_event_archive(archive_data, request.user)
+            return Response(
+                {
+                    'message': f'Successfully imported event "{imported_event.title}"!',
+                    'event_id': imported_event.id,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+        except Exception as e:
+            return Response({'detail': f'Import failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class BulkTeamImportCSVView(OrganizerOnlyMixin, APIView):
+    """POST /api/events/<id>/admin/import/teams-csv/ - Bulk import teams and participants from CSV."""
+
+    def post(self, request, pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+
+        csv_content = None
+        if 'csv_file' in request.FILES:
+            csv_content = request.FILES['csv_file'].read()
+        elif 'csv_content' in request.data:
+            csv_content = request.data['csv_content']
+
+        if not csv_content:
+            return Response({'detail': 'Provide csv_file or csv_content field.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            summary = import_teams_csv(event, csv_content)
+            return Response(
+                {
+                    'message': f"Imported {summary['teams_created']} team(s) and {summary['members_added']} member(s).",
+                    **summary,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            return Response({'detail': f'CSV import failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)

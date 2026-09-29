@@ -314,6 +314,66 @@ export interface CommunityVoteRecord {
   created_at: string
 }
 
+// T4 Stretch - Certificates, Verification, Portability, Webhooks
+export interface Certificate {
+  id: number
+  event: number
+  event_title: string
+  recipient_name: string
+  recipient_email: string
+  role: "winner" | "participant" | "judge"
+  title: string
+  award_title: string
+  certificate_code: string
+  signature: string
+  issued_at: string
+  is_valid: boolean
+}
+
+export interface JudgeRecordData {
+  record_id: string
+  judge_username: string
+  event_title: string
+  is_valid: boolean
+  signature: string
+  signature_algorithm: string
+  canonical_digest: string
+  record: {
+    judge_id: number
+    judge_username: string
+    event_id: number
+    event_title: string
+    evaluations_count: number
+    average_score_given: number
+    scored_rubrics_count: number
+    first_evaluation_at: string | null
+    last_evaluation_at: string | null
+    issued_at: string
+  }
+}
+
+export interface WebhookEndpoint {
+  id: number
+  target_url: string
+  is_active: boolean
+  subscribed_events: string[]
+  created_at: string
+  updated_at: string
+  secret?: string
+}
+
+export interface WebhookDelivery {
+  id: number
+  event_type: string
+  status: "success" | "failure"
+  response_status: number | null
+  attempt_count: number
+  created_at: string
+  payload?: any
+  response_body?: string
+}
+
+
 export class ApiError extends Error {
   status: number
   data: any
@@ -735,4 +795,89 @@ export const api = {
 
   getCommunityAuditCsvUrl: (eventId: number | string) =>
     `${getApiBaseUrl()}/api/events/${eventId}/admin/export/community-audit-csv/`,
+
+  // T4 Stretch
+  generateCertificates: (eventId: number | string) =>
+    apiRequest<{ message: string; certificates_count: number; records_signed: number }>(
+      `/api/events/${eventId}/admin/certificates/generate/`,
+      { method: "POST" }
+    ),
+
+  listEventCertificates: (eventId: number | string) =>
+    apiRequest<Certificate[]>(`/api/events/${eventId}/certificates/`),
+
+  getMyCertificates: () =>
+    apiRequest<Certificate[]>(`/api/my-certificates/`),
+
+  getPublicCertificate: (code: string) =>
+    apiRequest<Certificate>(`/api/certificates/${code}/`),
+
+  getCertificateDownloadUrl: (code: string) =>
+    `${getApiBaseUrl()}/api/certificates/${code}/download/`,
+
+  getMyJudgeRecord: (eventId: number | string) =>
+    apiRequest<JudgeRecordData>(`/api/events/${eventId}/my-judge-record/`),
+
+  getPublicJudgeRecord: (recordId: string) =>
+    apiRequest<JudgeRecordData>(`/api/judges/records/${recordId}/verify/`),
+
+  getExportBulkArchiveUrl: (eventId: number | string) =>
+    `${getApiBaseUrl()}/api/events/${eventId}/admin/export/bulk-archive/?download=1`,
+
+  exportBulkArchive: (eventId: number | string) =>
+    apiRequest<any>(`/api/events/${eventId}/admin/export/bulk-archive/`),
+
+  importBulkArchive: (archiveData: any) =>
+    apiRequest<{ message: string; event_id: number }>(`/api/events/admin/import/bulk-archive/`, {
+      method: "POST",
+      body: JSON.stringify(archiveData),
+    }),
+
+  importTeamsCsv: (eventId: number | string, csvContent: string) =>
+    apiRequest<{ message: string; teams_created: number; members_added: number }>(
+      `/api/events/${eventId}/admin/import/teams-csv/`,
+      {
+        method: "POST",
+        body: JSON.stringify({ csv_content: csvContent }),
+      }
+    ),
+
+  listWebhooks: (eventId: number | string) =>
+    apiRequest<WebhookEndpoint[]>(`/api/events/${eventId}/admin/webhooks/`),
+
+  createWebhook: (
+    eventId: number | string,
+    data: { target_url: string; subscribed_events: string[]; secret?: string }
+  ) =>
+    apiRequest<WebhookEndpoint>(`/api/events/${eventId}/admin/webhooks/`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updateWebhook: (
+    eventId: number | string,
+    webhookId: number,
+    data: { target_url?: string; is_active?: boolean; subscribed_events?: string[] }
+  ) =>
+    apiRequest<WebhookEndpoint>(`/api/events/${eventId}/admin/webhooks/${webhookId}/`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  deleteWebhook: (eventId: number | string, webhookId: number) =>
+    apiRequest<void>(`/api/events/${eventId}/admin/webhooks/${webhookId}/`, {
+      method: "DELETE",
+    }),
+
+  testWebhook: (eventId: number | string, webhookId: number) =>
+    apiRequest<any>(`/api/events/${eventId}/admin/webhooks/${webhookId}/test/`, {
+      method: "POST",
+    }),
+
+  listWebhookDeliveries: (eventId: number | string, webhookId: number) =>
+    apiRequest<WebhookDelivery[]>(`/api/events/${eventId}/admin/webhooks/${webhookId}/deliveries/`),
+
+  getWebhookEvents: () =>
+    apiRequest<{ event_types: { value: string; label: string }[] }>(`/api/events/webhook-events/`),
 }
+

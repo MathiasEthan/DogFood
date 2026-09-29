@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useAuth } from "@/context/auth-context"
 import { Header } from "@/components/header"
 import { Squares } from "@/components/reactbits/squares"
-import { api, ApiError, Event as EventType, ProjectSubmission, LeaderboardEntry } from "@/lib/api"
+import { api, ApiError, Event as EventType, ProjectSubmission, LeaderboardEntry, JudgeRecordData } from "@/lib/api"
 import { EvaluateSubmissionModal } from "@/components/evaluate-submission-modal"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -20,6 +20,7 @@ import {
   Presentation,
   Layers,
   Shield,
+  ShieldCheck,
   FileText,
   FileCode2,
   Calendar,
@@ -30,6 +31,8 @@ import {
   Star,
   Users,
   Download,
+  Copy,
+  Check,
 } from "lucide-react"
 
 export default function GalleryPage({ params }: { params: Promise<{ id: string }> }) {
@@ -49,6 +52,51 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
   const [trackFilter, setTrackFilter] = useState("")
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [evaluatingSubmission, setEvaluatingSubmission] = useState<ProjectSubmission | null>(null)
+
+  // T4 Stretch: Embed Modal & Judge Record Modal
+  const [showEmbedModal, setShowEmbedModal] = useState(false)
+  const [copiedEmbed, setCopiedEmbed] = useState(false)
+  const [showJudgeModal, setShowJudgeModal] = useState(false)
+  const [judgeRecord, setJudgeRecord] = useState<JudgeRecordData | null>(null)
+  const [loadingJudgeRecord, setLoadingJudgeRecord] = useState(false)
+  const [judgeRecordError, setJudgeRecordError] = useState<string | null>(null)
+  const [copiedJudgeUrl, setCopiedJudgeUrl] = useState(false)
+
+  const handleOpenJudgeRecord = async () => {
+    setShowJudgeModal(true)
+    setLoadingJudgeRecord(true)
+    setJudgeRecordError(null)
+    try {
+      const data = await api.getMyJudgeRecord(eventId)
+      setJudgeRecord(data)
+    } catch (err: any) {
+      setJudgeRecordError(err.message || "Failed to load judge participation record")
+    } finally {
+      setLoadingJudgeRecord(false)
+    }
+  }
+
+  const embedSnippet =
+    typeof window !== "undefined"
+      ? `<iframe src="${window.location.origin}/embed/events/${eventId}/gallery" width="100%" height="700" frameborder="0" style="border:1px solid #222; border-radius:12px; overflow:hidden;" allow="clipboard-write"></iframe>`
+      : `<iframe src="/embed/events/${eventId}/gallery" width="100%" height="700" frameborder="0"></iframe>`
+
+  const copyEmbedCode = () => {
+    if (typeof window !== "undefined") {
+      navigator.clipboard.writeText(embedSnippet)
+      setCopiedEmbed(true)
+      setTimeout(() => setCopiedEmbed(false), 2000)
+    }
+  }
+
+  const copyJudgeRecordUrl = () => {
+    if (typeof window !== "undefined" && judgeRecord) {
+      const url = `${window.location.origin}/verify/judge/${judgeRecord.record_id}`
+      navigator.clipboard.writeText(url)
+      setCopiedJudgeUrl(true)
+      setTimeout(() => setCopiedJudgeUrl(false), 2000)
+    }
+  }
 
   const loadData = async () => {
     try {
@@ -131,15 +179,39 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
               Back to {event?.title || "Event Specification"}
             </Link>
 
-            {isJudgeOrOrganizer && (
-              <Badge
+            <div className="flex items-center gap-2">
+              <Button
                 variant="outline"
-                className="text-[11px] font-mono text-amber-400 border-amber-500/30 bg-amber-500/10 py-1 px-2.5 flex items-center gap-1.5"
+                size="sm"
+                onClick={() => setShowEmbedModal(true)}
+                className="h-7 text-xs font-mono border-border/40 gap-1.5 hover:text-purple-300"
               >
-                <Shield className="size-3 text-amber-400" />
-                Judging & Evaluation Mode
-              </Badge>
-            )}
+                <Code className="size-3 text-purple-400" />
+                Embed Gallery
+              </Button>
+
+              {isEventJudge && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenJudgeRecord}
+                  className="h-7 text-xs font-mono border-amber-500/40 text-amber-300 bg-amber-500/10 gap-1.5 hover:bg-amber-500/20"
+                >
+                  <ShieldCheck className="size-3 text-amber-400" />
+                  My Signed Credential
+                </Button>
+              )}
+
+              {isJudgeOrOrganizer && (
+                <Badge
+                  variant="outline"
+                  className="text-[11px] font-mono text-amber-400 border-amber-500/30 bg-amber-500/10 py-1 px-2.5 flex items-center gap-1.5"
+                >
+                  <Shield className="size-3 text-amber-400" />
+                  Judging Mode
+                </Badge>
+              )}
+            </div>
           </div>
 
           {/* Heading & Context Information */}
@@ -616,6 +688,147 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
             }
           }}
         />
+      )}
+
+      {/* Embed Gallery Modal */}
+      {showEmbedModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowEmbedModal(false)}
+        >
+          <div
+            className="bg-[#0e131f] border border-border/40 rounded-xl max-w-2xl w-full p-6 text-slate-200 shadow-2xl relative space-y-4 font-mono"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="font-bold text-base text-white flex items-center gap-2">
+                <Code className="size-4 text-purple-400" /> Embed Gallery Widget
+              </h3>
+              <button
+                onClick={() => setShowEmbedModal(false)}
+                className="text-slate-400 hover:text-white font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Embed this interactive, responsive gallery on external websites, portfolio pages, or blogs. Includes real-time project search, track filtering, and details modal.
+            </p>
+
+            <div className="relative">
+              <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-[11px] font-mono text-slate-300 overflow-x-auto whitespace-pre-wrap">
+                {embedSnippet}
+              </pre>
+              <Button
+                onClick={copyEmbedCode}
+                size="sm"
+                className="absolute top-2 right-2 h-7 text-xs border border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800 gap-1"
+              >
+                {copiedEmbed ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+                {copiedEmbed ? "Copied" : "Copy Code"}
+              </Button>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800 text-xs">
+              <span className="text-slate-500">Supports automatic iframe height auto-resizing</span>
+              <Link
+                href={`/embed/events/${eventId}/gallery`}
+                target="_blank"
+                className="text-purple-400 hover:underline flex items-center gap-1 font-mono"
+              >
+                Preview Live Widget <ExternalLink className="size-3" />
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Judge Participation Record Modal */}
+      {showJudgeModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowJudgeModal(false)}
+        >
+          <div
+            className="bg-[#0e131f] border border-amber-500/40 rounded-xl max-w-xl w-full p-6 text-slate-200 shadow-2xl relative space-y-4 font-mono"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="font-bold text-base text-white flex items-center gap-2">
+                <ShieldCheck className="size-4 text-amber-400" /> Official Judge Credential
+              </h3>
+              <button
+                onClick={() => setShowJudgeModal(false)}
+                className="text-slate-400 hover:text-white font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {loadingJudgeRecord ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-400">
+                <Loader2 className="size-5 animate-spin text-amber-400" />
+                <p className="text-xs">Fetching cryptographic judge credential...</p>
+              </div>
+            ) : judgeRecordError || !judgeRecord ? (
+              <div className="p-4 rounded-lg bg-red-950/20 border border-red-500/30 text-xs text-red-300">
+                {judgeRecordError ||
+                  "No signed judge record available yet. Complete evaluations first or wait for the organizer to issue certificates."}
+              </div>
+            ) : (
+              <div className="space-y-4 text-xs">
+                <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Judge Username:</span>
+                    <span className="font-bold text-white">@{judgeRecord.judge_username}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Event:</span>
+                    <span className="font-semibold text-emerald-400">{judgeRecord.event_title}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Evaluations Completed:</span>
+                    <span className="font-bold text-white">{judgeRecord.record.evaluations_count}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Average Score Given:</span>
+                    <span className="font-bold text-amber-300">
+                      {judgeRecord.record.average_score_given.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5 break-all text-[11px]">
+                  <span className="text-slate-500 block text-[10px] uppercase">
+                    Cryptographic Signature (HMAC-SHA256)
+                  </span>
+                  <span className="text-emerald-400">{judgeRecord.signature}</span>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                  <Button
+                    onClick={copyJudgeRecordUrl}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs border-slate-700 bg-slate-900 text-slate-200 gap-1.5"
+                  >
+                    {copiedJudgeUrl ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+                    {copiedJudgeUrl ? "Link Copied" : "Copy Public Verification URL"}
+                  </Button>
+
+                  <Link
+                    href={`/verify/judge/${judgeRecord.record_id}`}
+                    target="_blank"
+                    className="text-amber-400 hover:underline flex items-center gap-1 text-xs"
+                  >
+                    View Public Record <ExternalLink className="size-3" />
+                  </Link>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   )

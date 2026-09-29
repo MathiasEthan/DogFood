@@ -556,6 +556,16 @@ class CommentDetailView(APIView):
                 'reason': (request.data.get('reason') or '')[:255] if hasattr(request, 'data') else '',
             },
         )
+        dispatch_webhook(
+            event,
+            WebhookEndpoint.EventType.COMMENT_MODERATED,
+            {
+                'event_id': event.id,
+                'comment_id': comment.pk,
+                'submission_id': comment.submission_id,
+                'removed_by': 'author' if is_author else 'moderator',
+            },
+        )
         return Response({'detail': 'Comment removed.'}, status=status.HTTP_200_OK)
 
 
@@ -672,6 +682,17 @@ class VoidVoteView(OrganizerOnlyMixin, APIView):
         vote.save(update_fields=['is_void', 'void_reason'])
         record_audit(event, VoteAuditLog.Action.VOTE_VOIDED, request, submission=vote.submission,
                      metadata={'vote_id': vote.pk, 'voter_id': vote.voter_id, 'reason': reason})
+        dispatch_webhook(
+            event,
+            WebhookEndpoint.EventType.VOTE_VOIDED,
+            {
+                'event_id': event.id,
+                'vote_id': vote.pk,
+                'voter_id': vote.voter_id,
+                'submission_id': vote.submission_id,
+                'reason': reason,
+            },
+        )
         return Response({'detail': 'Vote voided.', 'vote_id': vote.pk}, status=status.HTTP_200_OK)
 
 

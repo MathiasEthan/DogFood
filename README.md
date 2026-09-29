@@ -1,32 +1,67 @@
-# Containerized Offline Hackathon Platform
+# DogFood: Production-Grade, Containerized Hackathon Platform
+
+> **A mathematically defensible, cryptographically verified, and fully extensible hackathon platform engineered for zero organizer lock-in and absolute judging integrity.**
 
 ---
 
-##  Startup & Execution Options
+## Core Documentation Index
 
-You can run the platform in three ways depending on your development workflow:
+For in-depth technical analysis, system design, and mathematical proofs, consult our dedicated specifications:
 
-### Option 1: Full Docker Compose (Containerized Production Mode)
-
-Use this to run PostgreSQL, Django, and Next.js entirely inside Docker:
-
-- **First Run / After Dependency Updates** (Builds images from source):
-  ```bash
-  docker compose up --build
-  ```
-- **Subsequent Runs** (Instant start without rebuilding):
-  ```bash
-  docker compose up -d     # Starts all containers in the background
-  docker compose stop      # Pauses all containers
-  docker compose start     # Instantly resumes all containers (~1 second)
-  docker compose down      # Stops and removes containers
-  ```
+| Specification | Description |
+| :--- | :--- |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | Full system architecture, request lifecycles, auth models, and component topology. |
+| **[DATA-MODEL.md](DATA-MODEL.md)** | Complete Entity-Relationship specifications across all 21 models with constraints. |
+| **[JUDGING.md](JUDGING.md)** | Empirical Bayes regularized Z-score normalization, anti-COI bipartite matching, and anomaly detection. |
+| **[COMMUNITY.md](COMMUNITY.md)** | Sybil-resistant community voting, rate limiting, and cryptographic hash-chained audit trails. |
 
 ---
 
-### Option 2: Native Local Development (Fastest, with Hot-Reloading)
+## Platform Capabilities by Tier
 
-Run both services directly on your host machine for instant Fast Refresh and code reload without Docker:
+![](diagram/image_10.png)
+
+### 1. Tier 1: Core Event Management & Participant Portals
+- **Role-Based Access Control:** Strict role isolation across `participant`, `judge`, `organizer`, and `admin`.
+- **Team Lifecycle:** Atomic creation, 8-character unique join codes, automatic member cap enforcement, and single-leader privileges.
+- **Deadline Gatekeeper:** Submissions are strictly locked upon reaching `event.end_date` (evaluated server-side in UTC).
+- **Public & Peer Gallery:** Real-time search by title, tech stack, and team name, with track category filtering.
+
+### 2. Tier 2: Defensible Judging Engine (see [JUDGING.md](JUDGING.md))
+- **Empirical Bayes Normalization:** Eliminates harsh/lenient judge bias and scale spread by shrinking observed judge distributions toward the global event prior ($m=3.0$).
+- **Anti-Conflict-of-Interest (COI) Bipartite Matching:** Automatically assigns judges to ensure $K \ge 3$ balanced reviews while forbidding judges from scoring their own teams.
+- **Anti-Anchoring Blindness:** Leaderboards and peer marks remain inaccessible until the organizer publishes results (which permanently freezes scoring).
+- **Real-Time Anomaly Flags:** Detects consensus outliers ($\Delta_{\text{LOO}} \ge 3.0$), speed-running reviewers ($< 45\text{s}$ dwell time), and variance flatlining.
+
+### 3. Tier 3: Community Voting & Tamper-Proof Audit (see [COMMUNITY.md](COMMUNITY.md))
+- **Sybil Resistance:** Configurable per-user vote quotas, voter eligibility restrictions, and anti-self-voting enforcement.
+- **Merkle-Style Hash Chaining:** Every vote, withdrawal, and void action appends to a cryptographically linked ledger ($H_i = \text{SHA256}(H_{i-1} \,||\, \dots)$), verifiable in $O(N)$ time.
+
+### 4. Tier 4 & Stretch: Extensibility, Cryptography & Data Sovereignty
+- **Signed REST Webhooks:** Dispatches cryptographically signed payloads (`X-DogFood-Signature: sha256=<hmac>`) for every action reachable in the UI.
+- **Cryptographic Vector SVG Certificates:** 1-click issuance of signed certificates for Winners (1st, 2nd, 3rd), Participants, and Judges, publicly verifiable at `/certificates/<code\>`.
+- **Signed Judge Participation Records:** Generates an HMAC-SHA256 signed credential summarizing judge evaluations, verifiable at `/verify/judge/<record_id\>`.
+- **Embeddable Gallery Widget:** Headless showcase at `/embed/events/<id\>/gallery/` with `postMessage` iframe auto-resizing protocol.
+- **Zero Organizer Lock-In:** 1-click lossless JSON event export and import with SHA-256 integrity checksum, plus batch team CSV ingestion.
+
+---
+
+## Startup & Execution Options
+
+### Option 1: Full Docker Compose (Recommended)
+
+```bash
+# First Run / After Dependency Updates (Builds images from source)
+docker compose up --build
+
+# Subsequent Runs (Instant background launch)
+docker compose up -d     # Starts all containers in background
+docker compose stop      # Pauses all containers
+docker compose start     # Instantly resumes containers (~1 second)
+docker compose down      # Stops and removes containers
+```
+
+### Option 2: Native Local Development
 
 1. **Terminal 1: Start Django Backend**
    ```bash
@@ -34,10 +69,10 @@ Run both services directly on your host machine for instant Fast Refresh and cod
    python3 -m venv venv && source venv/bin/activate
    pip install -r requirements.txt
    python manage.py migrate
-   python manage.py createcachetable   # rate-limit counters live in the DB cache
+   python manage.py createcachetable
    python manage.py runserver 8000
    ```
-   *(Note: Django automatically falls back to local SQLite if PostgreSQL is not running).*
+   *(Automatically uses SQLite if PostgreSQL is not active).*
 
 2. **Terminal 2: Start Next.js Frontend**
    ```bash
@@ -45,135 +80,96 @@ Run both services directly on your host machine for instant Fast Refresh and cod
    npm run dev
    ```
 
----
-
-### Option 3: Hybrid Setup (PostgreSQL in Docker, Apps on Host)
-
-If you want PostgreSQL without installing it directly on your machine:
-
-1. **Start only the PostgreSQL container**:
-   ```bash
-   docker compose up db -d
-   ```
-2. **Run Django and Next.js locally** (using the commands in Option 2).
+### Default Credentials
+On initial startup, `backend/entrypoint.sh` provisions default administrator access:
+- **Username:** `admin`
+- **Password:** `AdminPassword123!`
+- **Role:** `admin`
 
 ---
 
-### Access Endpoints (All Modes)
+## Comprehensive REST API Directory
 
-Once running:
-- **Frontend Web UI**: [http://localhost:3000](http://localhost:3000)
-- **Backend API**: [http://localhost:8000](http://localhost:8000)
-- **Django Admin**: [http://localhost:8000/admin/](http://localhost:8000/admin/)
-
----
-
-##  Default Admin Credentials
-
-On initial startup, `backend/entrypoint.sh` automatically seeds the default administrator if not present:
-
-- **Username**: `admin`
-- **Password**: `AdminPassword123!`
-- **Role**: `admin`
-
-*(You can customize these via `.env`)*
-
----
-
-## 📡 REST API Reference
-
-### Authentication
+### Authentication & API Keys
 | Endpoint | Method | Permission | Description |
-|---|---|---|---|
-| `/api/auth/register/` | POST | Public | Register new account (`participant` or `organizer` only). Sets HttpOnly cookies. |
-| `/api/auth/login/` | POST | Public | Authenticate with username/email and password. Sets HttpOnly cookies. |
-| `/api/auth/refresh/` | POST | Public | Rotates access token using HttpOnly refresh cookie. |
-| `/api/auth/logout/` | POST | Public | Invalidates token and clears HttpOnly cookies. |
-| `/api/auth/me/` | GET | Authenticated | Returns authenticated user profile and assigned role. |
-| `/api/auth/users/` | GET | Admin Only | Lists all registered platform users. |
-| `/api/auth/users/<id>/appoint-judge/` | POST | Admin Only | Appoints the specified user as a Judge. |
+| :--- | :--- | :--- | :--- |
+| `/api/auth/register/` | POST | Public | Register new account (`participant` or `organizer`). |
+| `/api/auth/login/` | POST | Public | Authenticate; sets HttpOnly JWT access/refresh cookies. |
+| `/api/auth/refresh/` | POST | Public | Rotates access token using refresh cookie. |
+| `/api/auth/logout/` | POST | Public | Clears session cookies. |
+| `/api/auth/me/` | GET | Authenticated | Profile and role context. |
+| `/api/auth/users/` | GET | Admin | Lists all platform users. |
+| `/api/auth/users/<id>/appoint-judge/` | POST | Admin | Appoints user as Judge. |
+| `/api/auth/api-keys/` | GET / POST | Authenticated | List or mint hashed API keys (`dfk_...`). |
+| `/api/auth/api-keys/<id>/` | PATCH / DELETE | Owner | Pause or permanently revoke an API key. |
 
 ### Events & Teams
 | Endpoint | Method | Permission | Description |
-|---|---|---|---|
-| `/api/events/` | GET | Public | List all active hackathon events. |
-| `/api/events/` | POST | Organizer / Admin | Create a new hackathon event (supports banner upload). |
-| `/api/events/<id>/` | GET | Public | Retrieve full event details + user's current team. |
-| `/api/events/<id>/teams/create/` | POST | Authenticated | Create a team for this event and receive a shareable team code. |
-| `/api/events/<id>/teams/join/` | POST | Authenticated | Join a team in this event using an 8-character team code. |
-| `/api/events/<id>/teams/leave/` | POST | Authenticated | Leave current team for this event. |
+| :--- | :--- | :--- | :--- |
+| `/api/events/` | GET / POST | Public / Organizer | List events or create new competition. |
+| `/api/events/<id>/` | GET / PATCH | Public / Organizer | Retrieve details or update settings. |
+| `/api/events/<id>/teams/create/` | POST | Authenticated | Register team and generate unique join code. |
+| `/api/events/<id>/teams/join/` | POST | Authenticated | Join team via join code. |
+| `/api/events/<id>/teams/leave/` | POST | Authenticated | Leave team. |
 
-### Project Submissions
+### Submissions & Gallery
 | Endpoint | Method | Permission | Description |
-|---|---|---|---|
-| `/api/events/<id>/my-submission/` | GET | Authenticated (Team Member) | Retrieve team's project submission. |
-| `/api/events/<id>/submit/` | POST | Authenticated (Team Leader) | Create or update project submission before event deadline (multipart form). |
-| `/api/events/<id>/submissions/` | GET | This event's organizer / judges / admin | Submissions roster (judges never see drafts). |
-| `/api/events/<id>/gallery/?q=&track=` | GET | Public | Searchable gallery of non-draft projects. Randomized per viewer while voting is open (`X-Gallery-Ordering` header). |
+| :--- | :--- | :--- | :--- |
+| `/api/events/<id>/my-submission/` | GET | Team Member | Retrieve team submission. |
+| `/api/events/<id>/submit/` | POST | Team Leader | Create/update project submission before deadline. |
+| `/api/events/<id>/submissions/` | GET | Organizer/Judge | Submissions roster (drafts hidden from judges). |
+| `/api/events/<id>/gallery/?q=&track=` | GET | Public | Searchable non-draft gallery. |
 
-### Judging (T2) — see [JUDGING.md](JUDGING.md)
-"Organizer" below always means the organizer **of that event** (or a platform admin).
-
+### Judging & Integrity (T2)
 | Endpoint | Method | Permission | Description |
-|---|---|---|---|
-| `/api/events/<id>/rubrics/` | GET / POST | Public / Organizer | Weighted rubrics (locked once evaluations exist). |
-| `/api/events/<id>/submissions/<sid>/evaluate/` | GET / POST | Event judge (assigned) | Score every rubric; COI, drafts and published results are rejected. GET starts the server-side dwell clock. |
-| `/api/events/<id>/admin/assign-judges/` | POST | Organizer | COI-free, load-balanced assignment `{k_per_project}`; reports `deficits`. |
-| `/api/events/<id>/admin/judging-progress/` | GET | Organizer | Judge telemetry (μ, σ, flatline), project saturation matrix. |
-| `/api/events/<id>/leaderboard/` | GET | Organizer; everyone after publish | Empirical-Bayes normalized standings; public view anonymizes judges. |
-| `/api/events/<id>/admin/publish-results/` | POST | Organizer | `{published: true/false}`; publishing locks scoring. |
-| `/api/events/<id>/admin/export/{submissions,assignments,rubric-breakdown,feedback,evaluation-audit,leaderboard}-csv/` | GET | Organizer | Streaming CSV exports for every stage. |
+| :--- | :--- | :--- | :--- |
+| `/api/events/<id>/rubrics/` | GET / POST | Public / Organizer | Weighted rubrics configuration. |
+| `/api/events/<id>/admin/assign-judges/` | POST | Organizer | Constrained bipartite assignment algorithm. |
+| `/api/events/<id>/submissions/<sid>/evaluate/` | GET / POST | Assigned Judge | Dwell-clocked blind evaluation scorecard. |
+| `/api/events/<id>/admin/judging-progress/` | GET | Organizer | Review saturation matrix & judge telemetry. |
+| `/api/events/<id>/leaderboard/` | GET | Organizer / Public* | Empirical Bayes normalized standings (*after publish). |
+| `/api/events/<id>/admin/publish-results/` | POST | Organizer | Unlocks standings; permanently locks scoring. |
+| `/api/events/<id>/admin/export/<type>-csv/` | GET | Organizer | Streaming CSV exports (leaderboard, rubrics, feedback). |
 
-### Community (T3) — see [COMMUNITY.md](COMMUNITY.md)
+### Community Voting (T3)
 | Endpoint | Method | Permission | Description |
-|---|---|---|---|
-| `/api/events/<id>/voting/` | GET | Public | Voting window, rules, and the caller's quota / ballot / eligibility. |
-| `/api/events/<id>/submissions/<sid>/vote/` | POST / DELETE | Authenticated, eligible | Cast (`201`, `409` duplicate) or withdraw a vote while voting is open. Rate limited. |
-| `/api/events/<id>/community-results/` | GET | Public after voting closes | Vote ranking; `403 results_hidden` during voting unless the organizer opts in. |
-| `/api/events/<id>/submissions/<sid>/comments/` | GET / POST | Public / Authenticated | Comments (duplicate + rate limited). |
-| `/api/events/<id>/comments/<cid>/` | PATCH / DELETE | Author / author or organizer | Edit own; remove own or moderate. |
-| `/api/events/<id>/admin/community-votes/?flagged=1` | GET | Organizer | Individual votes with abuse flags. |
-| `/api/events/<id>/admin/community-votes/<vid>/void/` | POST | Organizer | Void a vote with a reason (excluded from tallies). |
-| `/api/events/<id>/admin/community-audit/` | GET | Organizer | Hash-chained audit trail (`?flagged=1`, `?action=`). |
-| `/api/events/<id>/admin/community-audit/verify/` | GET | Organizer | Recompute the hash chain; reports the first tampered entry. |
-| `/api/events/<id>/admin/export/{community-votes,community-audit}-csv/` | GET | Organizer | CSV exports. |
+| :--- | :--- | :--- | :--- |
+| `/api/events/<id>/voting/` | GET | Public | Window status, eligibility rules, and user ballot. |
+| `/api/events/<id>/submissions/<sid>/vote/` | POST / DELETE | Eligible Voter | Cast or withdraw community ballot. |
+| `/api/events/<id>/community-results/` | GET | Public* | Community results (*after window closes). |
+| `/api/events/<id>/submissions/<sid>/comments/`| GET / POST | Public / Auth | Submit or view community feedback stream. |
+| `/api/events/<id>/admin/community-audit/` | GET | Organizer | Cryptographic hash-chained audit trail. |
+| `/api/events/<id>/admin/community-audit/verify/`| GET | Organizer | Validates full SHA-256 Merkle chain integrity. |
 
-Voting rules (window, votes per user, eligibility, self-voting, live counts, comments) are set with `PATCH /api/events/admin/events/<id>/` or the **Community Voting & Results** panel on the event page; every change is written to the audit trail.
-
-### Webhooks & API Keys (T4)
+### Certificates, Judge Credentials & Portability (T4)
 | Endpoint | Method | Permission | Description |
-|---|---|---|---|
-| `/api/events/<id>/webhooks/` | GET / POST | Organizer | List an event's webhooks; register a new one (`target_url`, optional `subscribed_events`). The signing secret is only ever returned in full on this `POST`. |
-| `/api/events/<id>/webhooks/<wid>/` | PATCH / DELETE | Organizer | Update `target_url` / `is_active` / `subscribed_events`, or remove the webhook. |
-| `/api/events/<id>/webhooks/<wid>/deliveries/` | GET | Organizer | Delivery log (status, HTTP response, attempt count) for one webhook. |
-| `/api/events/<id>/webhooks/<wid>/deliveries/<did>/redeliver/` | POST | Organizer | Manually retry one previously failed delivery. |
-| `/api/auth/api-keys/` | GET / POST | Authenticated | List your own API keys (masked); mint a new one. The raw key is only ever returned in full on this `POST`. |
-| `/api/auth/api-keys/<kid>/` | PATCH / DELETE | Owner | Pause (`is_active`) or permanently revoke a key. |
-
-Webhooks fire a signed `POST` for `team.created`, `submission.created`, `submission.updated`, `evaluation.submitted`, `results.published`, `vote.cast` and `comment.posted`. Every delivery includes an `X-DogFood-Signature: sha256=<hmac>` header — an HMAC-SHA256 of the exact request body, keyed by that endpoint's own secret — so the receiver can verify it actually came from this platform. There's no background worker in this stack, so delivery is synchronous and best-effort; failures are logged and can be redelivered by hand.
-
-API keys let an external tool call this REST API without a browser session: send `Authorization: ApiKey <key>` instead of relying on the login cookies. A key grants exactly the same permissions its owner already has everywhere else in the app — an organizer's key manages their events, nothing more.
+| :--- | :--- | :--- | :--- |
+| `/api/events/<id>/admin/certificates/generate/` | POST | Organizer | Issues signed certificates & signs judge records. |
+| `/api/events/<id>/certificates/` | GET | Organizer | Lists all certificates issued for this event. |
+| `/api/my-certificates/` | GET | Authenticated | Lists personal credentials awarded to caller. |
+| `/api/certificates/<code>/` | GET | Public | Independent public certificate verification. |
+| `/api/certificates/<code>/download/` | GET | Public | Direct vector SVG certificate download. |
+| `/api/events/<id>/my-judge-record/` | GET | Appointed Judge| Judge's own signed participation credential. |
+| `/api/judges/records/<record_id>/verify/` | GET | Public | Independent verification of judge participation. |
+| `/api/events/<id>/admin/export/bulk-archive/` | GET | Organizer | Download lossless event JSON archive with SHA-256. |
+| `/api/events/admin/import/bulk-archive/` | POST | Organizer | Recreate full event structure from JSON archive. |
+| `/api/events/<id>/admin/import/teams-csv/` | POST | Organizer | Bulk import teams and members from CSV. |
+| `/api/events/<id>/admin/webhooks/` | GET / POST | Organizer | List or register signed webhook endpoints. |
+| `/api/events/<id>/admin/webhooks/<wid>/test/` | POST | Organizer | Sends immediate signed test ping to endpoint. |
 
 ---
 
-## 🧪 Local Testing & Verification
+## Automated Testing & Verification
 
-To run backend tests locally:
+The platform is covered by an automated test suite verifying all cryptographic operations, role isolation rules, normalization formulas, and data portability:
 
 ```bash
+# Execute entire backend test suite (98 tests)
 cd backend
 python manage.py test
-```
 
-To run frontend checks:
-
-```bash
-cd frontend
+# Execute frontend TypeScript and production build checks
+cd ../frontend
 npm run typecheck
 npm run build
 ```
-
-## Notes
-- If `DB_HOST` isn't set, the backend uses SQLite instead of PostgreSQL.
-- Rate limits are configurable via `THROTTLE_COMMUNITY_VOTES`, `THROTTLE_COMMUNITY_COMMENTS` and `THROTTLE_AUTH` (defaults `30/min`, `10/min`, `20/min`).
-- Only set `TRUST_X_FORWARDED_FOR=True` when running behind a trusted reverse proxy.
