@@ -83,6 +83,16 @@ $$\text{Standard Error } SE_i = \begin{cases}
 0.0 & \text{if } |J_i| \le 1 
 \end{cases}$$
 
+```mermaid
+flowchart TD
+    RawScore["Judge j submits Scorecard for Project i<br/>Marks on Rubrics 1..M (out of M_k)"] --> Weighted["Compute Raw Weighted Evaluation<br/>s_{j,i} = sum(w_k * (x_k / M_k * 10))"]
+    Weighted --> Prior["Compute Global Event Baseline<br/>mu_0 = mean(all scores), sigma_0 = std(all scores)"]
+    Prior --> Shrink["Apply Empirical Bayes Shrinkage (m=3.0)<br/>Compute shrunk mean mu_j_hat<br/>Compute shrunk std sigma_j_hat (clamped >= 0.5)"]
+    Shrink --> Z["Compute Standardized Z-Score<br/>z_{j,i} = (s_{j,i} - mu_j_hat) / sigma_j_hat"]
+    Z --> Rescaled["Rescale to Global Distribution & Clamp<br/>S_{j,i}^{norm} = clamp(mu_0 + z * sigma_0, 1.0, 10.0)"]
+    Rescaled --> Standings["Project Standings Aggregate<br/>Final Normalized Score S_i = mean(S_{j,i}^{norm})<br/>Standard Error SE_i = std_dev / sqrt(|J_i|)"]
+```
+
 ---
 
 ## 3. Weighted & Configurable Judging Rubrics
@@ -153,6 +163,33 @@ Output: Assignment Pairs (judge_id, submission_id)
 Completed reviews are never reshuffled: re-running assignment keeps `COMPLETED` pairs and only redistributes `PENDING` ones. The API response includes `fully_saturated`, `deficits` and `max_workload`, and the chosen $K$ is stored on the event (`judges_per_project`) so the progress dashboard measures saturation against it.
 
 **Known limitation:** the greedy pass processes the most-constrained projects first, which works well in practice, but it is not guaranteed to find a complete assignment in every case where one exists. A max-flow formulation would give that guarantee; when the greedy pass falls short, it reports the deficit explicitly rather than failing silently.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Organizer
+    participant API as Assignment Endpoint (/admin/assign-judges/)
+    participant Matcher as Bipartite Matcher
+    participant DB as Relational Database
+    actor Judge as Appointed Judges
+
+    Organizer->>API: POST /api/events/1/admin/assign-judges/ { target_reviews: 3 }
+    API->>DB: Fetch non-draft Submissions P & Appointed Judges J
+    API->>Matcher: Execute Constrained Min-Degree Matching
+    
+    loop For each project p in P
+        Matcher->>Matcher: Filter out Judges with COI (j in Team(p))
+        Matcher->>Matcher: Rank remaining judges by current Workload ascending
+        Matcher->>Matcher: Assign top available judges until saturated (K=3)
+    end
+
+    Matcher-->>API: (judge_id, submission_id) pairs + Deficit report
+    API->>DB: Bulk create JudgeAssignment records (preserve COMPLETED)
+    API-->>Organizer: 200 OK { fully_saturated: true, assigned_pairs: 30, deficits: [] }
+    
+    Judge->>API: GET /api/events/1/judging/assigned/
+    API-->>Judge: Return personalized blind evaluation queue
+```
 
 ---
 
@@ -250,6 +287,47 @@ Column layouts of the three core exports:
 
 ---
 
-## 9. Conclusion & Defensibility Summary
+## 9. Cryptographically Signed Judge Participation Records (T4 Stretch)
 
-By combining **Empirical Bayes regularized Z-score normalization**, **constrained bipartite assignment**, **strict anti-COI role isolation**, and **immutable audit logging**, DogFood provides a defensible hackathon judging engine. The system corrects for judge severity and spread, hides standings until an explicit publish step (which also locks scoring), enforces conflict-of-interest and assignment rules on the server, and keeps an audit trail from first submission to final results. Every rule above is covered by the backend test suite (`events/tests.py`, `events/test_isolation.py`).
+Hackathons historically offer zero verifiable proof for judges who dedicate hours evaluating projects. DogFood introduces **Signed Judge Participation Records** (`JudgeParticipationRecord`) providing tamper-evident cryptographic proof of an appointed judge's active service:
+
+### 9.1 Data Telemetry & Canonical Serialization
+When an organizer finalizes the event and triggers certificate issuance (`POST /api/events/<id>/admin/certificates/generate/`), the engine aggregates each judge's complete activity metrics:
+- Number of evaluated projects ($N_{\text{eval}}$).
+- Total rubric marks assigned ($N_{\text{rubrics}}$).
+- Average score awarded ($\bar{s}_j$).
+- Timestamp of first review and timestamp of final review.
+
+The telemetry dictionary is converted to a deterministic, compact canonical JSON representation:
+
+$$\text{Canonical JSON} = \text{deterministic\_canonical\_json}(\text{telemetry})$$
+
+### 9.2 Cryptographic Signing Pipeline
+1. **SHA-256 Digest:** The engine computes the SHA-256 hash of the canonical JSON string:
+   $$\text{canonical\_digest} = \text{SHA256}(\text{Canonical JSON})$$
+2. **HMAC-SHA256 Signature:** The digest is signed using HMAC-SHA256 with the platform's secret key:
+   $$\text{signature} = \text{HMAC-SHA256}(\text{canonical\_digest}, \, \text{SECRET\_KEY})$$
+3. **Public Verification Key:** A random UUIDv4 string (`record_id`) is minted and bound to the record.
+
+```mermaid
+flowchart TD
+    Finalize["Event Concluded & Results Published<br/>Organizer triggers 'Generate & Sign Certificates'"] --> Telemetry["Compute Judge Telemetry<br/>- Completed evaluation count<br/>- Scored rubric marks count<br/>- Average score awarded<br/>- First and last evaluation timestamps"]
+    Telemetry --> Canonical["Serialize to Deterministic Canonical JSON<br/>signing.py: deterministic_canonical_json()"]
+    Canonical --> Digest["Compute SHA-256 Payload Digest<br/>digest = sha256(canonical_json)"]
+    Digest --> Signature["Compute HMAC-SHA256 Signature<br/>signature = hmac_sha256(digest, SECRET_KEY)"]
+    Signature --> Record["Store JudgeParticipationRecord<br/>- record_id: UUIDv4<br/>- canonical_digest<br/>- signature<br/>- issued_at"]
+    Record --> PublicVerify["Public Independent Verification<br/>API: GET /api/judges/records/{record_id}/verify/<br/>Web UI: /verify/judge/{record_id}"]
+```
+
+### 9.3 Public Independent Verification
+Anyone can verify a judge's credential without needing an account or credentials:
+- **API Endpoint:** `GET /api/judges/records/<record_id>/verify/` returns the canonical record, SHA-256 digest, HMAC signature, and a boolean `is_valid: true`.
+- **Public Web Verifier:** Navigating to `/verify/judge/<record_id>/` presents the verified credential badge, evaluation statistics, and cryptographic proof card.
+- **Judge Portal Access:** Appointed judges can view and copy their verified credential URL directly via the "My Signed Credential" button in the gallery interface.
+
+---
+
+## 10. Conclusion & Defensibility Summary
+
+By combining **Empirical Bayes regularized Z-score normalization**, **constrained bipartite assignment**, **strict anti-COI role isolation**, **immutable audit logging**, and **signed judge participation records**, DogFood provides a mathematically defensible hackathon judging engine. The system corrects for judge severity and spread, hides standings until an explicit publish step (which locks scoring), enforces conflict-of-interest and assignment rules on the server, maintains an audit trail from first submission to final results, and issues cryptographically verifiable credentials for judges and winners alike. Every rule above is covered by the backend test suite (`events/tests.py`, `events/test_isolation.py`, `events/test_t4_stretch.py`).
+
