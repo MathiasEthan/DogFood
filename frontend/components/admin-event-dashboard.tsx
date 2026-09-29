@@ -38,10 +38,12 @@ export function AdminEventDashboard({
   eventId,
   eventObj,
   refreshEvent,
+  isPlatformAdmin = false,
 }: {
   eventId: number
   eventObj: any
   refreshEvent: () => void
+  isPlatformAdmin?: boolean
 }) {
   const router = useRouter()
   const [usersList, setUsersList] = useState<User[]>([])
@@ -52,7 +54,7 @@ export function AdminEventDashboard({
   
   const [activeTab, setActiveTab] = useState<
     "teams" | "judges" | "settings" | "certificates" | "portability" | "webhooks"
-  >("teams")
+  >(isPlatformAdmin ? "teams" : "certificates")
 
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -121,8 +123,9 @@ export function AdminEventDashboard({
   }
 
   useEffect(() => {
-    fetchAdminData()
-  }, [eventId])
+    // Teams/judges tabs use platform-admin endpoints; organizers manage those on the event page itself
+    if (isPlatformAdmin) fetchAdminData()
+  }, [eventId, isPlatformAdmin])
 
   useEffect(() => {
     if (activeTab === "certificates") fetchCertificates()
@@ -147,7 +150,8 @@ export function AdminEventDashboard({
     try {
       const res = await api.generateCertificates(eventId)
       setActionSuccess(
-        `Issued ${res.certificates_count} certificates and signed ${res.records_signed} judge participation records!`
+        `Issued ${res.certificates_count} certificates and signed ${res.records_signed} judge participation records` +
+          (res.revoked_count ? `; revoked ${res.revoked_count} superseded certificate(s).` : ".")
       )
       fetchCertificates()
     } catch (err: any) {
@@ -167,11 +171,17 @@ export function AdminEventDashboard({
     setActionSuccess(null)
     try {
       const res = await api.importTeamsCsv(eventId, csvContent)
+      const skipped = res.skipped || []
       setActionSuccess(
-        `Successfully imported ${res.teams_created} teams and ${res.members_added} participants.`
+        `Imported ${res.teams_created} team(s) and ${res.members_added} participant(s).` +
+          (skipped.length
+            ? ` Skipped ${skipped.length} row(s): ` +
+              skipped.map((r) => `line ${r.line}${r.username ? ` (${r.username})` : ""}: ${r.reason}`).join("; ")
+            : "")
       )
       setCsvContent("")
-      fetchAdminData()
+      if (isPlatformAdmin) fetchAdminData()
+      refreshEvent()
     } catch (err: any) {
       setActionError(err.message || "CSV import failed")
     } finally {
@@ -206,12 +216,14 @@ export function AdminEventDashboard({
     setLoadingAction(true)
     setActionError(null)
     try {
-      await api.createWebhook(eventId, {
+      const created = await api.createWebhook(eventId, {
         target_url: newWebhookUrl.trim(),
         subscribed_events: selectedEvents.length > 0 ? selectedEvents : ["*"],
         secret: newWebhookSecret.trim() || undefined,
       })
-      setActionSuccess("Webhook endpoint registered successfully.")
+      setActionSuccess(
+        `Webhook registered. Signing secret (shown only once — store it to verify X-DogFood-Signature): ${created.secret}`
+      )
       setNewWebhookUrl("")
       setNewWebhookSecret("")
       setSelectedEvents([])
@@ -226,7 +238,14 @@ export function AdminEventDashboard({
   const handleTestWebhook = async (webhookId: number) => {
     try {
       const res = await api.testWebhook(eventId, webhookId)
-      setActionSuccess(`Ping sent! HTTP Status: ${res.status_code || "OK"}`)
+      if (res.status === "SUCCESS") {
+        setActionSuccess(`Ping delivered — receiver answered HTTP ${res.status_code}.`)
+      } else {
+        setActionError(
+          `Ping failed${res.status_code ? ` (HTTP ${res.status_code})` : ""}: ${res.response_body || "no response"}`
+        )
+      }
+      if (viewingWebhookId === webhookId) handleViewDeliveries(webhookId)
     } catch (err: any) {
       setActionError(err.message || "Webhook test ping failed")
     }
@@ -290,7 +309,9 @@ export function AdminEventDashboard({
             "webhooks",
             "settings",
           ] as const
-        ).map((t) => (
+        )
+          .filter((t) => isPlatformAdmin || !["teams", "judges"].includes(t))
+          .map((t) => (
           <Button
             key={t}
             variant={activeTab === t ? "default" : "outline"}
@@ -443,7 +464,7 @@ export function AdminEventDashboard({
                 <Award className="w-4 h-4 text-emerald-400" /> Cryptographic Certificate Issuance
               </h3>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                Issue signed HMAC-SHA256 SVG certificates to winning teams (1st, 2nd, 3rd), all participants, and appointed judges.
+                Issue Ed25519-signed SVG certificates that anyone can verify with the public key: winners (by the official normalized leaderboard), all participants, and judges who scored. Requires published results; re-issuing revokes superseded certificates.
               </p>
             </div>
             <Button
@@ -495,6 +516,11 @@ export function AdminEventDashboard({
                       >
                         {cert.role}
                       </Badge>
+                      {cert.status && cert.status !== "valid" && (
+                        <Badge variant="outline" className="ml-1 text-[10px] uppercase border-red-500/40 text-red-300">
+                          {cert.status}
+                        </Badge>
+                      )}
                     </td>
                     <td className="py-2.5 px-3 text-muted-foreground font-medium">
                       {cert.award_title}
@@ -677,7 +703,7 @@ export function AdminEventDashboard({
 
               <div>
                 <label className="block text-[11px] text-muted-foreground mb-1">
-                  HMAC Secret Key (Optional)
+                  Signing secret (optional, min 16 chars — auto-generated if empty)
                 </label>
                 <Input
                   type="text"
@@ -852,7 +878,7 @@ export function AdminEventDashboard({
                         <Badge
                           variant="outline"
                           className={`text-[10px] ${
-                            d.status === "success"
+                            d.status === "SUCCESS"
                               ? "border-emerald-500/40 text-emerald-300"
                               : "border-destructive/40 text-destructive"
                           }`}

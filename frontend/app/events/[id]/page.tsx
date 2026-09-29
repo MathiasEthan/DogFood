@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useAuth } from "@/context/auth-context"
 import { Header } from "@/components/header"
 import { Squares } from "@/components/reactbits/squares"
-import { api, Event as EventType, Team, ProjectSubmission } from "@/lib/api"
+import { api, buildInviteLink, Event as EventType, Team, ProjectSubmission } from "@/lib/api"
 import { AdminEventDashboard } from "@/components/admin-event-dashboard"
 import { JudgeAppointmentCombobox } from "@/components/judge-appointment-combobox"
 import { EditEventModal } from "@/components/edit-event-modal"
@@ -83,6 +83,17 @@ export default function EventDetailPage({
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [copiedLink, setCopiedLink] = useState(false)
+  // Invite links: /events/<id>?join=<TEAM-CODE>
+  const [invite, setInvite] = useState<{
+    code: string
+    team_name?: string
+    leader_username?: string
+    member_count?: number
+    max_size?: number
+    is_full?: boolean
+    error?: string
+  } | null>(null)
 
   const [activeTab, setActiveTab] = useState<"create" | "join">("create")
 
@@ -173,6 +184,32 @@ export default function EventDetailPage({
     }
   }
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const code = new URLSearchParams(window.location.search).get("join")
+    if (!code) return
+    const normalized = code.trim().toUpperCase()
+    setActiveTab("join")
+    setTeamCodeInput(normalized)
+    api
+      .lookupTeamInvite(eventId, normalized)
+      .then((info) => setInvite({ ...info, code: normalized }))
+      .catch((err) => setInvite({ code: normalized, error: err.message || "This invite link is invalid." }))
+  }, [eventId])
+
+  const copyInviteLink = (code: string) => {
+    navigator.clipboard.writeText(buildInviteLink(eventId, code))
+    setCopiedLink(true)
+    setTimeout(() => setCopiedLink(false), 2000)
+  }
+
+  const clearInviteParam = () => {
+    if (typeof window !== "undefined" && window.location.search.includes("join=")) {
+      window.history.replaceState(null, "", window.location.pathname)
+    }
+    setInvite(null)
+  }
+
   const handleJoinTeam = async (e: React.FormEvent) => {
     e.preventDefault()
     setActionError(null)
@@ -187,6 +224,7 @@ export default function EventDetailPage({
       const res = await api.joinTeam(eventId, teamCodeInput.trim())
       setActionSuccess(res.message)
       setTeamCodeInput("")
+      clearInviteParam()
       await fetchEvent()
     } catch (err: any) {
       setActionError(err.message || "Could not join team.")
@@ -1169,6 +1207,14 @@ export default function EventDetailPage({
                         {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
                         {copied ? "Copied" : "Copy Code"}
                       </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => copyInviteLink(event.my_team!.code)}
+                        className="h-8 text-sm font-mono gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
+                      >
+                        {copiedLink ? <Check className="size-3" /> : <UserPlus className="size-3" />}
+                        {copiedLink ? "Link copied" : "Copy Invite Link"}
+                      </Button>
                     </div>
                   </div>
 
@@ -1250,9 +1296,50 @@ export default function EventDetailPage({
                   </div>
                 </div>
               </div>
+            ) : user && (user.id === event.created_by || isJudge) ? (
+              <div className="p-4 rounded-lg border border-border/40 bg-muted/10 text-sm text-muted-foreground">
+                You are {user.id === event.created_by ? "the organizer" : "a judge"} of this event, so you can&apos;t join or
+                create a team in it (conflict of interest).
+              </div>
             ) : user ? (
               /* SCENARIO B: LOGGED IN PARTICIPANT WITHOUT A TEAM */
               <div className="space-y-4">
+                {invite && (
+                  <div
+                    className={`p-4 rounded-lg border text-sm ${
+                      invite.error || invite.is_full
+                        ? "border-destructive/30 bg-destructive/5"
+                        : "border-emerald-500/40 bg-emerald-500/10"
+                    }`}
+                  >
+                    {invite.error ? (
+                      <span className="text-destructive">{invite.error}</span>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <div className="font-semibold text-foreground">
+                            You&apos;ve been invited to join <span className="text-emerald-400">{invite.team_name}</span>
+                          </div>
+                          <div className="text-[11px] text-muted-foreground font-mono">
+                            Led by @{invite.leader_username} · {invite.member_count}/{invite.max_size} members
+                            {invite.is_full ? " · team is full" : ""}
+                          </div>
+                        </div>
+                        {!invite.is_full && (
+                          <Button
+                            size="sm"
+                            disabled={actionLoading}
+                            onClick={(e) => handleJoinTeam(e as unknown as React.FormEvent)}
+                            className="h-8 text-sm font-mono bg-emerald-600 hover:bg-emerald-500 text-white"
+                          >
+                            {actionLoading ? <Loader2 className="size-3.5 animate-spin mr-1.5" /> : <UserPlus className="size-3.5 mr-1.5" />}
+                            Accept &amp; Join
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-2 border-b border-border/40 pb-3">
                   <button
                     type="button"
@@ -1343,15 +1430,17 @@ export default function EventDetailPage({
               /* SCENARIO C: UNAUTHENTICATED */
               <div className="p-6 rounded-lg border border-border/40 bg-muted/10 text-center space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  Sign in or create an account to form or join a team for this hackathon.
+                  {invite && !invite.error
+                    ? `You've been invited to join ${invite.team_name}. Sign in or register to accept.`
+                    : "Sign in or create an account to form or join a team for this hackathon."}
                 </p>
                 <div className="flex items-center justify-center gap-3">
-                  <Link href="/login">
+                  <Link href={invite ? `/login?next=${encodeURIComponent(`/events/${eventId}?join=${invite.code}`)}` : "/login"}>
                     <Button size="sm" variant="outline" className="text-sm font-mono">
                       Sign In
                     </Button>
                   </Link>
-                  <Link href="/register">
+                  <Link href={invite ? `/register?next=${encodeURIComponent(`/events/${eventId}?join=${invite.code}`)}` : "/register"}>
                     <Button size="sm" className="text-sm font-mono bg-foreground text-background">
                       Register
                     </Button>
@@ -1440,8 +1529,13 @@ export default function EventDetailPage({
           {event && isCreatorOrAdmin && <CommunityVotingPanel event={event} onUpdated={fetchEvent} />}
 
           {/* 3. ADMIN MANAGEMENT */}
-          {user?.role === "admin" && (
-            <AdminEventDashboard eventId={Number(eventId)} eventObj={event} refreshEvent={fetchEvent} />
+          {event && isCreatorOrAdmin && (
+            <AdminEventDashboard
+              eventId={Number(eventId)}
+              eventObj={event}
+              refreshEvent={fetchEvent}
+              isPlatformAdmin={user?.role === "admin"}
+            />
           )}
 
           {/* Edit Event Modal for Organizers & Admins */}

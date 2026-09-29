@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useAuth } from "@/context/auth-context"
 import { Header } from "@/components/header"
 import { Squares } from "@/components/reactbits/squares"
-import { api, Event as EventType, Team, ProjectSubmission } from "@/lib/api"
+import { api, buildInviteLink, Event as EventType, Team, ProjectSubmission } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -239,6 +239,8 @@ export default function TeamSubmissionPage({
     }
   }
 
+  const [inviteCopied, setInviteCopied] = useState(false)
+
   const copyTeamCode = (code: string) => {
     navigator.clipboard.writeText(code)
     setCopied(true)
@@ -372,6 +374,18 @@ export default function TeamSubmissionPage({
                   >
                     {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
                     {copied ? "Copied" : "Copy"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      navigator.clipboard.writeText(buildInviteLink(eventId, team.code))
+                      setInviteCopied(true)
+                      setTimeout(() => setInviteCopied(false), 2000)
+                    }}
+                    className="h-7 text-xs font-mono gap-1 bg-emerald-600 hover:bg-emerald-500 text-white"
+                  >
+                    {inviteCopied ? <Check className="size-3" /> : <Users className="size-3" />}
+                    {inviteCopied ? "Link copied" : "Copy invite link"}
                   </Button>
                 </div>
               </div>

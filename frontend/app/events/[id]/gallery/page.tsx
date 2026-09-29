@@ -794,14 +794,14 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                   <div className="flex items-center justify-between">
                     <span className="text-slate-400">Average Score Given:</span>
                     <span className="font-bold text-amber-300">
-                      {judgeRecord.record.average_score_given.toFixed(2)}
+                      {judgeRecord.record.average_score_given != null ? judgeRecord.record.average_score_given.toFixed(2) : "—"}
                     </span>
                   </div>
                 </div>
 
                 <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5 break-all text-[11px]">
                   <span className="text-slate-500 block text-[10px] uppercase">
-                    Cryptographic Signature (HMAC-SHA256)
+                    Cryptographic Signature (Ed25519)
                   </span>
                   <span className="text-emerald-400">{judgeRecord.signature}</span>
                 </div>

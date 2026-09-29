@@ -21,6 +21,15 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
+// ?next=/events/3?join=HACK-AB12 support (invite links). Only same-site paths are accepted,
+// so the parameter can't be abused as an open redirect.
+function safeNextPath(): string | null {
+  if (typeof window === "undefined") return null
+  const next = new URLSearchParams(window.location.search).get("next")
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return null
+  return next
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -45,7 +54,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async (credentials: { username: string; password: string }) => {
     const res = await api.login(credentials)
     setUser(res.user)
-    if (res.user.role === "organizer" || res.user.role === "judge" || res.user.role === "admin") {
+    const next = safeNextPath()
+    if (next) {
+      router.push(next)
+    } else if (res.user.role === "organizer" || res.user.role === "judge" || res.user.role === "admin") {
       router.push("/dashboard")
     } else {
       router.push("/")
@@ -61,7 +73,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }) => {
     const res = await api.register(payload)
     setUser(res.user)
-    if (res.user.role === "organizer" || res.user.role === "admin") {
+    const next = safeNextPath()
+    if (next) {
+      router.push(next)
+    } else if (res.user.role === "organizer" || res.user.role === "admin") {
       router.push("/dashboard")
     } else {
       router.push("/")

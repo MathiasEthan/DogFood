@@ -1,3 +1,5 @@
+from unittest import mock
+
 from django.test import TestCase
 from django.utils import timezone
 from datetime import timedelta
@@ -92,7 +94,10 @@ class T4StretchTests(TestCase):
             submitted_by=self.participant1,
         )
 
-    def test_webhooks_dispatched_on_team_join_and_leave(self):
+    @mock.patch('events.webhooks.requests.post')
+    @mock.patch('events.webhooks._resolve', return_value={'93.184.216.34'})
+    def test_webhooks_dispatched_on_team_join_and_leave(self, _resolve, post):
+        post.return_value = mock.Mock(status_code=200, text='ok')
         # Register a webhook endpoint
         endpoint = WebhookEndpoint.objects.create(
             event=self.event,
@@ -137,8 +142,12 @@ class T4StretchTests(TestCase):
             score=9.5,
         )
 
-        # Organizer generates certificates
+        # Organizer generates certificates (only allowed once results are published)
         self.client.force_authenticate(user=self.organizer)
+        res = self.client.post(f'/api/events/{self.event.id}/admin/certificates/generate/')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.event.results_published = True
+        self.event.save()
         res = self.client.post(f'/api/events/{self.event.id}/admin/certificates/generate/')
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertGreaterEqual(res.data['certificates_count'], 2)
@@ -175,6 +184,8 @@ class T4StretchTests(TestCase):
         )
 
         # Trigger certificate generation which signs the judge record
+        self.event.results_published = True
+        self.event.save()
         self.client.force_authenticate(user=self.organizer)
         self.client.post(f'/api/events/{self.event.id}/admin/certificates/generate/')
 
@@ -190,7 +201,7 @@ class T4StretchTests(TestCase):
         res_pub = self.client.get(f'/api/judges/records/{record_id}/verify/')
         self.assertEqual(res_pub.status_code, status.HTTP_200_OK)
         self.assertTrue(res_pub.data['is_valid'])
-        self.assertEqual(res_pub.data['signature_algorithm'], 'HMAC-SHA256')
+        self.assertEqual(res_pub.data['signature_algorithm'], 'Ed25519')
         self.assertEqual(res_pub.data['record']['evaluations_count'], 1)
 
     def test_bulk_event_export_and_import(self):

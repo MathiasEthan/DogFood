@@ -205,6 +205,11 @@ class ConflictOfInterestTests(IsolationBase):
         res = self.client.post(reverse('team_join', kwargs={'pk': self.event.pk}), {'code': code}, format='json')
         self.assertEqual(res.status_code, 403)
 
+    def test_organizer_cannot_join_own_event_as_participant(self):
+        self.client.force_authenticate(self.org)
+        res = self.client.post(reverse('team_create', kwargs={'pk': self.event.pk}), {'name': 'org team'}, format='json')
+        self.assertEqual(res.status_code, 403)
+
     def test_team_member_cannot_be_appointed_judge(self):
         self.client.force_authenticate(self.org)
         res = self.client.post(

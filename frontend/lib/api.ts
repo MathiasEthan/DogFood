@@ -326,8 +326,16 @@ export interface Certificate {
   award_title: string
   certificate_code: string
   signature: string
+  signature_algorithm?: string
+  public_key_hex?: string
+  signed_payload?: Record<string, any>
   issued_at: string
   is_valid: boolean
+  status?: "valid" | "revoked" | "invalid"
+  revoked_at?: string | null
+  revocation_reason?: string
+  download_url?: string
+  verification_url?: string
 }
 
 export interface JudgeRecordData {
@@ -337,6 +345,7 @@ export interface JudgeRecordData {
   is_valid: boolean
   signature: string
   signature_algorithm: string
+  public_key_hex?: string
   canonical_digest: string
   record: {
     judge_id: number
@@ -344,11 +353,12 @@ export interface JudgeRecordData {
     event_id: number
     event_title: string
     evaluations_count: number
-    average_score_given: number
+    average_score_given: number | null
     scored_rubrics_count: number
     first_evaluation_at: string | null
     last_evaluation_at: string | null
-    issued_at: string
+    signed_at?: string
+    key_id?: string
   }
 }
 
@@ -358,14 +368,14 @@ export interface WebhookEndpoint {
   is_active: boolean
   subscribed_events: string[]
   created_at: string
-  updated_at: string
+  updated_at?: string
   secret?: string
 }
 
 export interface WebhookDelivery {
   id: number
   event_type: string
-  status: "success" | "failure"
+  status: "SUCCESS" | "FAILED" | "PENDING"
   response_status: number | null
   attempt_count: number
   created_at: string
@@ -798,7 +808,7 @@ export const api = {
 
   // T4 Stretch
   generateCertificates: (eventId: number | string) =>
-    apiRequest<{ message: string; certificates_count: number; records_signed: number }>(
+    apiRequest<{ message: string; certificates_count: number; records_signed: number; revoked_count: number }>(
       `/api/events/${eventId}/admin/certificates/generate/`,
       { method: "POST" }
     ),
@@ -834,7 +844,13 @@ export const api = {
     }),
 
   importTeamsCsv: (eventId: number | string, csvContent: string) =>
-    apiRequest<{ message: string; teams_created: number; members_added: number }>(
+    apiRequest<{
+      message: string
+      teams_created: number
+      members_added: number
+      users_created?: number
+      skipped?: { line: number; username?: string; reason: string }[]
+    }>(
       `/api/events/${eventId}/admin/import/teams-csv/`,
       {
         method: "POST",
@@ -843,13 +859,13 @@ export const api = {
     ),
 
   listWebhooks: (eventId: number | string) =>
-    apiRequest<WebhookEndpoint[]>(`/api/events/${eventId}/admin/webhooks/`),
+    apiRequest<WebhookEndpoint[]>(`/api/events/${eventId}/webhooks/`),
 
   createWebhook: (
     eventId: number | string,
     data: { target_url: string; subscribed_events: string[]; secret?: string }
   ) =>
-    apiRequest<WebhookEndpoint>(`/api/events/${eventId}/admin/webhooks/`, {
+    apiRequest<WebhookEndpoint>(`/api/events/${eventId}/webhooks/`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
@@ -859,25 +875,48 @@ export const api = {
     webhookId: number,
     data: { target_url?: string; is_active?: boolean; subscribed_events?: string[] }
   ) =>
-    apiRequest<WebhookEndpoint>(`/api/events/${eventId}/admin/webhooks/${webhookId}/`, {
+    apiRequest<WebhookEndpoint>(`/api/events/${eventId}/webhooks/${webhookId}/`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
 
   deleteWebhook: (eventId: number | string, webhookId: number) =>
-    apiRequest<void>(`/api/events/${eventId}/admin/webhooks/${webhookId}/`, {
+    apiRequest<void>(`/api/events/${eventId}/webhooks/${webhookId}/`, {
       method: "DELETE",
     }),
 
   testWebhook: (eventId: number | string, webhookId: number) =>
-    apiRequest<any>(`/api/events/${eventId}/admin/webhooks/${webhookId}/test/`, {
+    apiRequest<{ delivery_id: number; status: "SUCCESS" | "FAILED" | "PENDING"; status_code: number | null; response_body: string }>(`/api/events/${eventId}/webhooks/${webhookId}/test/`, {
       method: "POST",
     }),
 
   listWebhookDeliveries: (eventId: number | string, webhookId: number) =>
-    apiRequest<WebhookDelivery[]>(`/api/events/${eventId}/admin/webhooks/${webhookId}/deliveries/`),
+    apiRequest<WebhookDelivery[]>(`/api/events/${eventId}/webhooks/${webhookId}/deliveries/`),
 
   getWebhookEvents: () =>
     apiRequest<{ event_types: { value: string; label: string }[] }>(`/api/events/webhook-events/`),
+
+  getSigningKey: () =>
+    apiRequest<{ algorithm: string; key_id: string; public_key_hex: string; public_key_pem: string }>(`/api/signing-key/`),
+
+  getSigningKeyUrl: () => `${getApiBaseUrl()}/api/signing-key/`,
+
+  lookupTeamInvite: (eventId: number | string, code: string) =>
+    apiRequest<{
+      event_id: number
+      event_title: string
+      team_name: string
+      code: string
+      leader_username: string
+      member_count: number
+      max_size: number
+      is_full: boolean
+      already_in_a_team: boolean
+    }>(`/api/events/${eventId}/teams/lookup/?code=${encodeURIComponent(code)}`),
+}
+
+export function buildInviteLink(eventId: number | string, code: string) {
+  const origin = typeof window !== "undefined" ? window.location.origin : ""
+  return `${origin}/events/${eventId}?join=${encodeURIComponent(code)}`
 }
 

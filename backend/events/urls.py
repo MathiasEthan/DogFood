@@ -32,6 +32,9 @@ from .views import (
     EventWebhookDetailView,
     EventWebhookDeliveriesView,
     WebhookRedeliverView,
+    WebhookEventTypesView,
+    EventWebhookTestView,
+    TeamInviteLookupView,
     GenerateCertificatesView,
     EventCertificatesListView,
     MyCertificatesListView,
@@ -62,6 +65,7 @@ urlpatterns = [
     path('<int:pk>/', EventDetailView.as_view(), name='event_detail'),
     path('<int:pk>/teams/create/', CreateTeamView.as_view(), name='team_create'),
     path('<int:pk>/teams/join/', JoinTeamView.as_view(), name='team_join'),
+    path('<int:pk>/teams/lookup/', TeamInviteLookupView.as_view(), name='team_invite_lookup'),
     path('<int:pk>/teams/leave/', LeaveTeamView.as_view(), name='team_leave'),
     path('<int:pk>/submit/', SubmitProjectView.as_view(), name='project_submit'),
     path('<int:pk>/my-submission/', MySubmissionView.as_view(), name='my_submission'),
@@ -106,6 +110,8 @@ urlpatterns = [
     # T4 - webhooks
     path('<int:pk>/webhooks/', EventWebhooksView.as_view(), name='event_webhooks'),
     path('<int:pk>/webhooks/<int:webhook_pk>/', EventWebhookDetailView.as_view(), name='event_webhook_detail'),
+    path('webhook-events/', WebhookEventTypesView.as_view(), name='webhook_event_types'),
+    path('<int:pk>/webhooks/<int:webhook_pk>/test/', EventWebhookTestView.as_view(), name='event_webhook_test'),
     path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/', EventWebhookDeliveriesView.as_view(), name='event_webhook_deliveries'),
     path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/<int:delivery_pk>/redeliver/', WebhookRedeliverView.as_view(), name='event_webhook_redeliver'),
 

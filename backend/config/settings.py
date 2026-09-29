@@ -141,8 +141,12 @@ REST_FRAMEWORK = {
         'community_votes': os.getenv('THROTTLE_COMMUNITY_VOTES', '30/min'),
         'community_comments': os.getenv('THROTTLE_COMMUNITY_COMMENTS', '10/min'),
         'auth': os.getenv('THROTTLE_AUTH', '20/min'),
+        'team_lookup': os.getenv('THROTTLE_TEAM_LOOKUP', '30/min'),
     },
 }
+
+# SSRF guard: webhooks may only target public addresses unless explicitly allowed (local dev only).
+WEBHOOK_ALLOW_PRIVATE_TARGETS = os.getenv('WEBHOOK_ALLOW_PRIVATE_TARGETS', 'False').lower() == 'true'
 
 # Only enable behind a trusted reverse proxy; otherwise X-Forwarded-For is spoofable.
 TRUST_X_FORWARDED_FOR = os.getenv('TRUST_X_FORWARDED_FOR', 'False').lower() == 'true'

@@ -77,7 +77,8 @@ To ensure community votes cannot be repudiated, altered, or injected by maliciou
 ### 4.5 Digital Signatures & Public Verification Engine (T4 Stretch)
 DogFood provides cryptographic proof of achievement and participation:
 - **Canonical Serialization:** Formats JSON payloads deterministically (sorted keys, compact whitespace) via `backend/events/signing.py`.
-- **HMAC-SHA256 Signatures:** Signs payloads with server secret keys to prevent tampering.
+- **Ed25519 Signatures (public-key):** Certificates and judge records freeze their claims in `signed_payload` and sign them with the platform's Ed25519 key. The public key is published at `/api/signing-key/`, so anyone can verify offline (`scripts/verify_record.py`) without trusting the server. HMAC is used only for webhooks, where sender and receiver share a secret.
+- **Official standings only:** Certificates can only be issued after results are published and rank winners with the same normalized standings as the leaderboard. Re-issuing revokes superseded certificates (status `revoked`) instead of deleting them.
 - **Vector SVG Generation:** Standalone SVG certificates generated server-side with embedded verification hashes, ornate guilloche vectors, and gold seals.
 - **Judge Participation Records:** Appointed judges receive a signed record containing review count, rubric marks, average score given, and activity timestamps, publicly verifiable at `/verify/judge/<record_id>/`.
 
@@ -98,7 +99,7 @@ DogFood provides cryptographic proof of achievement and participation:
 To ensure organizers have full data sovereignty:
 - **Lossless Event Export (`export_event_archive`):** Generates a comprehensive JSON archive containing all event configuration, rubrics, teams, submissions, evaluations, votes, comments, and certificates, sealed with an SHA-256 checksum.
 - **Event Reconstitution (`import_event_archive`):** Recreates an entire event structure on any DogFood instance from the JSON bundle, safely remapping user accounts and resolving code collisions.
-- **Bulk CSV Importer (`import_teams_csv`):** Ingests bulk team and participant lists from CSV (`team_name,username,email,is_leader`), automatically creating users and assigning leadership roles in atomic transactions.
+- **Bulk CSV Importer (`import_teams_csv`):** Ingests bulk team and participant lists from CSV (`team_name,username,email,is_leader`), creating missing users (no usable password until reset) and enforcing the same rules as the UI: capacity, one team per event, and no judges/organizer on teams. Bad rows are reported, good rows imported.
 
 ---
 
@@ -122,7 +123,7 @@ DogFood/
 │   │   ├── views.py        # REST viewsets & API endpoints
 │   │   ├── community.py    # T3 community voting, comments & audit log verification
 │   │   ├── certificates.py # T4 vector SVG generator & certificate issuance
-│   │   ├── signing.py      # Deterministic canonical serialization & HMAC engine
+│   │   ├── signing.py      # Canonical serialization & Ed25519 signing / public key
 │   │   ├── portability.py  # Bulk JSON archive & CSV ingestion engine
 │   │   └── tests.py        # 98 automated unit and integration tests
 │   └── manage.py
