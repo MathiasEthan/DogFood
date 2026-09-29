@@ -1863,3 +1863,98 @@ class BulkTeamImportCSVView(OrganizerOnlyMixin, APIView):
             )
         except Exception as e:
             return Response({'detail': f'CSV import failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class JudgeScoresView(APIView):
+    """
+    T2 Acceptance check & Role Isolation endpoint:
+    GET /api/judge/scores/
+    GET /api/events/<pk>/judging/scores/
+
+    Rules:
+      * Unauthenticated requests are rejected (401 Unauthorized).
+      * Participants are rejected (403 Forbidden).
+      * Judges may view their own scores (200 OK).
+      * When ?judge=<name> is provided:
+          - If the caller is not an admin and does not match the target judge,
+            the backend strictly refuses with 403 Forbidden.
+          - If the caller is the target judge (or an admin), returns 200 OK.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk=None):
+        user = request.user
+        is_admin = _is_platform_admin(user)
+
+        # 1. Check if user is a participant (or not a judge of any event)
+        is_judge_role = (getattr(user, 'role', '') == 'judge') or Event.objects.filter(judges=user).exists()
+        if not is_admin and not is_judge_role:
+            return Response(
+                {'detail': 'Participants cannot access judge score sheets.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # 2. Check peer scores parameter
+        target_judge_param = (
+            request.query_params.get('judge')
+            or request.query_params.get('judge_id')
+            or request.query_params.get('judge_username')
+        )
+
+        target_judge = user
+        if target_judge_param:
+            target_str = str(target_judge_param).strip().lower()
+            current_username = (user.username or '').lower()
+            current_id = str(user.id)
+
+            is_self = (
+                target_str == current_username
+                or target_str == current_id
+                or (hasattr(user, 'email') and target_str == (user.email or '').lower())
+            )
+
+            if not is_self and not is_admin:
+                return Response(
+                    {'detail': 'Role isolation violation: Judges are forbidden from viewing peer score sheets.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Resolve target user
+            from django.contrib.auth import get_user_model
+            from django.db.models import Q
+            UserModel = get_user_model()
+            found = UserModel.objects.filter(
+                Q(username__iexact=target_str) | Q(id__iexact=target_str) | Q(email__iexact=target_str)
+            ).first()
+            if found:
+                target_judge = found
+
+        # 3. Retrieve evaluations
+        evaluations_qs = ProjectEvaluation.objects.filter(judge=target_judge)
+        if pk:
+            evaluations_qs = evaluations_qs.filter(submission__team__event_id=pk)
+
+        evaluations_qs = evaluations_qs.select_related('submission', 'submission__team').prefetch_related('scores', 'scores__rubric')
+
+        scores_data = []
+        for ev in evaluations_qs:
+            rubric_scores = [
+                {'rubric': s.rubric.title, 'score': s.score, 'max_score': s.rubric.max_score}
+                for s in ev.scores.all()
+            ]
+            scores_data.append({
+                'project_id': ev.submission.id,
+                'project_title': ev.submission.title,
+                'team_name': ev.submission.team.name,
+                'total_score': ev.total_score,
+                'feedback': ev.feedback,
+                'scores': rubric_scores,
+                'evaluated_at': ev.updated_at.isoformat() if ev.updated_at else None,
+            })
+
+        return Response({
+            'judge': target_judge.username,
+            'count': len(scores_data),
+            'scores': scores_data,
+        }, status=status.HTTP_200_OK)
+

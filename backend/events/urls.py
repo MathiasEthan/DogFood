@@ -46,6 +46,7 @@ from .views import (
     BulkEventExportView,
     BulkEventImportView,
     BulkTeamImportCSVView,
+    JudgeScoresView,
 )
 from .community import (
     CommunityVoteView,
@@ -77,6 +78,8 @@ urlpatterns = [
     path('<int:pk>/rubrics/<int:rubric_pk>/', EventRubricsManageView.as_view(), name='event_rubric_detail'),
     path('<int:event_pk>/submissions/<int:sub_pk>/evaluate/', SubmitProjectEvaluationView.as_view(), name='submission_evaluate'),
     path('<int:pk>/my-assignments/', MyAssignmentsView.as_view(), name='my_assignments'),
+    path('<int:pk>/judging/scores/', JudgeScoresView.as_view(), name='event_judge_scores'),
+    path('judging/scores/', JudgeScoresView.as_view(), name='global_judge_scores'),
     path('<int:pk>/leaderboard/', EventLeaderboardView.as_view(), name='event_leaderboard'),
     path('<int:pk>/admin/assign-judges/', AdminAssignJudgesView.as_view(), name='admin_assign_judges'),
     path('<int:pk>/admin/judging-progress/', AdminJudgingProgressView.as_view(), name='admin_judging_progress'),
@@ -133,4 +136,3 @@ urlpatterns = [
     path('admin/import/bulk-archive/', BulkEventImportView.as_view(), name='admin_import_bulk_archive'),
     path('<int:pk>/admin/import/teams-csv/', BulkTeamImportCSVView.as_view(), name='admin_import_teams_csv'),
 ]
-

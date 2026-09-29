@@ -7,7 +7,7 @@ from datetime import timedelta
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-hackathon-auth-offline-super-secret-key-12345')
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-hackathon-offline-production-key-2026')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'

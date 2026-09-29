@@ -43,5 +43,8 @@ else:
 END
 fi
 
+echo "==> Loading official hackathon fixtures (fixtures.json)..."
+python manage.py load_fixtures || true
+
 echo "==> Starting server: $@"
 exec "$@"
