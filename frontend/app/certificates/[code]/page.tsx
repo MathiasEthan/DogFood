@@ -85,10 +85,25 @@ export default function CertificateVerificationPage({
           <div className="space-y-8">
             {/* Status Header */}
             <div className="text-center space-y-3">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span className="font-semibold tracking-wide">CRYPTOGRAPHICALLY VERIFIED CREDENTIAL</span>
-              </div>
+              {cert.status === "revoked" ? (
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-950/60 border border-amber-500/40 text-amber-300 text-xs">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" />
+                  <span className="font-semibold tracking-wide">
+                    REVOKED{cert.revoked_at ? ` ON ${new Date(cert.revoked_at).toLocaleDateString()}` : ""}
+                    {cert.revocation_reason ? ` — ${cert.revocation_reason.toUpperCase()}` : ""}
+                  </span>
+                </div>
+              ) : cert.status === "invalid" || (!cert.status && !cert.is_valid) ? (
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-950/60 border border-red-500/40 text-red-300 text-xs">
+                  <ShieldAlert className="w-4 h-4 text-red-400" />
+                  <span className="font-semibold tracking-wide">SIGNATURE INVALID — DO NOT TRUST THIS CERTIFICATE</span>
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span className="font-semibold tracking-wide">SIGNATURE VERIFIED · VALID CREDENTIAL</span>
+                </div>
+              )}
               <h1 className="text-3xl font-extrabold text-white tracking-tight">
                 {cert.title}
               </h1>
@@ -146,8 +161,13 @@ export default function CertificateVerificationPage({
                     </div>
                     <div>
                       <span className="text-slate-500 block text-[10px] uppercase">Integrity Status</span>
-                      <span className="text-emerald-400 flex items-center gap-1">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Valid & Untampered
+                      <span
+                        className={`flex items-center gap-1 ${
+                          cert.status === "valid" ? "text-emerald-400" : cert.status === "revoked" ? "text-amber-400" : "text-red-400"
+                        }`}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />{" "}
+                        {cert.status === "valid" ? "Valid & Untampered" : cert.status === "revoked" ? "Revoked" : "Signature invalid"}
                       </span>
                     </div>
                   </div>
@@ -173,7 +193,7 @@ export default function CertificateVerificationPage({
                 </div>
 
                 <div className="text-[11px] text-slate-500">
-                  Signed via HMAC-SHA256 Digest
+                  Signed with Ed25519 (public key)
                 </div>
               </div>
             </div>
@@ -185,12 +205,26 @@ export default function CertificateVerificationPage({
               </h3>
               <div className="space-y-2 font-mono text-[11px] break-all">
                 <div className="bg-slate-950 p-2.5 rounded border border-slate-800/80">
-                  <span className="text-slate-500 block text-[10px]">DIGITAL SIGNATURE (HMAC-SHA256)</span>
+                  <span className="text-slate-500 block text-[10px]">DIGITAL SIGNATURE ({cert.signature_algorithm || "Ed25519"})</span>
                   <span className="text-emerald-400">{cert.signature}</span>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded border border-slate-800/80 flex items-center justify-between">
-                  <span className="text-slate-500 text-[10px]">VERIFICATION MECHANISM</span>
-                  <span className="text-slate-300">Deterministic Canonical Signature Inspection</span>
+                <div className="bg-slate-950 p-2.5 rounded border border-slate-800/80">
+                  <span className="text-slate-500 block text-[10px]">PLATFORM PUBLIC KEY</span>
+                  <span className="text-slate-300">{cert.public_key_hex}</span>
+                </div>
+                {cert.signed_payload && (
+                  <div className="bg-slate-950 p-2.5 rounded border border-slate-800/80">
+                    <span className="text-slate-500 block text-[10px]">SIGNED CLAIMS (CANONICAL JSON)</span>
+                    <pre className="text-slate-300 whitespace-pre-wrap">{JSON.stringify(cert.signed_payload, null, 2)}</pre>
+                  </div>
+                )}
+                <div className="text-[10px] text-slate-500 leading-relaxed">
+                  Verify independently: serialize the signed claims with sorted keys and no whitespace, then check the
+                  Ed25519 signature against the public key published at{" "}
+                  <a className="text-emerald-400 hover:underline" href={api.getSigningKeyUrl()} target="_blank" rel="noreferrer">
+                    /api/signing-key/
+                  </a>
+                  . No trust in this website is required.
                 </div>
               </div>
             </div>

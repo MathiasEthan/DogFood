@@ -601,8 +601,12 @@ class WebhookDelivery(models.Model):
 
 class Certificate(models.Model):
     """
-    Issued verifiable credentials for participants, winners, judges, and organizers.
-    Includes a unique verification code and HMAC-SHA256 signature for tamper-proof public verification.
+    Verifiable credential for a participant, winner or judge.
+
+    At issuance we freeze the exact claims in `signed_payload` and sign them with the platform's
+    Ed25519 key (see signing.py). Verification never re-reads live rows, so later renames can't
+    silently invalidate - or silently change - what the certificate says. Superseded certificates
+    are revoked (not deleted) so previously shared links keep resolving and show "revoked".
     """
 
     class Role(models.TextChoices):
@@ -634,41 +638,53 @@ class Certificate(models.Model):
     certificate_code = models.CharField(max_length=64, unique=True, db_index=True)
     issued_at = models.DateTimeField(default=timezone.now)
     metadata = models.JSONField(default=dict, blank=True)
+    signed_payload = models.JSONField(default=dict, blank=True, help_text="Exact claims that were signed")
     signature = models.CharField(max_length=128, blank=True, default='')
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revocation_reason = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         ordering = ['-issued_at']
         unique_together = [('event', 'recipient_user', 'role', 'award_title')]
+
+    def build_payload(self):
+        from .signing import key_id
+        return {
+            'type': 'dogfood.certificate',
+            'version': 1,
+            'key_id': key_id(),
+            'code': self.certificate_code,
+            'event_id': self.event_id,
+            'event_title': self.event.title,
+            'recipient': self.recipient_name,
+            'role': self.role,
+            'title': self.title,
+            'award': self.award_title,
+            'rank': self.metadata.get('rank'),
+            'submission_title': self.metadata.get('submission_title'),
+            'issued_at': self.issued_at.isoformat() if self.issued_at else '',
+        }
 
     def save(self, *args, **kwargs):
         if not self.certificate_code:
             self.certificate_code = f"CERT-{self.event_id}-{secrets.token_hex(6).upper()}"
         if not self.signature:
             from .signing import sign_data
-            payload = {
-                'code': self.certificate_code,
-                'event_id': self.event_id,
-                'event_title': self.event.title,
-                'recipient': self.recipient_name,
-                'role': self.role,
-                'award': self.award_title,
-                'issued_at': self.issued_at.isoformat() if self.issued_at else '',
-            }
-            self.signature = sign_data(payload)
+            self.signed_payload = self.build_payload()
+            self.signature = sign_data(self.signed_payload)
         super().save(*args, **kwargs)
 
     def is_valid_signature(self):
         from .signing import verify_signature
-        payload = {
-            'code': self.certificate_code,
-            'event_id': self.event_id,
-            'event_title': self.event.title,
-            'recipient': self.recipient_name,
-            'role': self.role,
-            'award': self.award_title,
-            'issued_at': self.issued_at.isoformat() if self.issued_at else '',
-        }
-        return verify_signature(payload, self.signature)
+        return bool(self.signed_payload) and verify_signature(self.signed_payload, self.signature)
+
+    @property
+    def status(self):
+        if not self.is_valid_signature():
+            return 'invalid'
+        if self.revoked_at:
+            return 'revoked'
+        return 'valid'
 
     def __str__(self):
         return f"{self.title} -> {self.recipient_name} ({self.certificate_code})"
@@ -676,8 +692,9 @@ class Certificate(models.Model):
 
 class JudgeParticipationRecord(models.Model):
     """
-    Cryptographically signed, publicly verifiable judge participation record.
-    Summarizes the judge's scoring workload, timestamps, and evaluation commitment.
+    Signed, publicly verifiable record of a judge's participation in an event.
+    `signed_payload` is frozen at signing time and signed with Ed25519; anyone can verify it
+    offline against the public key published at /api/signing-key/.
     """
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='judge_records')
     judge = models.ForeignKey(
@@ -688,10 +705,13 @@ class JudgeParticipationRecord(models.Model):
     record_id = models.CharField(max_length=64, unique=True, db_index=True)
     evaluations_count = models.PositiveIntegerField(default=0)
     rubrics_scored_count = models.PositiveIntegerField(default=0)
+    average_score_given = models.FloatField(null=True, blank=True)
     first_evaluation_at = models.DateTimeField(null=True, blank=True)
     last_evaluation_at = models.DateTimeField(null=True, blank=True)
+    signed_payload = models.JSONField(default=dict, blank=True)
     canonical_digest = models.CharField(max_length=64, blank=True, default='')
     signature = models.CharField(max_length=128, blank=True, default='')
+    signed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -699,7 +719,11 @@ class JudgeParticipationRecord(models.Model):
         unique_together = [('event', 'judge')]
 
     def build_canonical_payload(self):
+        from .signing import key_id
         return {
+            'type': 'dogfood.judge_participation',
+            'version': 1,
+            'key_id': key_id(),
             'record_id': self.record_id,
             'event_id': self.event_id,
             'event_title': self.event.title,
@@ -709,26 +733,28 @@ class JudgeParticipationRecord(models.Model):
             'judge_username': self.judge.username,
             'judge_name': f"{self.judge.first_name} {self.judge.last_name}".strip() or self.judge.username,
             'evaluations_count': self.evaluations_count,
-            'rubrics_scored_count': self.rubrics_scored_count,
+            'scored_rubrics_count': self.rubrics_scored_count,
+            'average_score_given': self.average_score_given,
             'first_evaluation_at': self.first_evaluation_at.isoformat() if self.first_evaluation_at else '',
             'last_evaluation_at': self.last_evaluation_at.isoformat() if self.last_evaluation_at else '',
+            'signed_at': self.signed_at.isoformat() if self.signed_at else '',
         }
 
     def sign_and_save(self, *args, **kwargs):
         from .signing import compute_digest, sign_data
         if not self.record_id:
             self.record_id = f"JPR-{self.event_id}-{self.judge_id}-{secrets.token_hex(4).upper()}"
-        payload = self.build_canonical_payload()
-        self.canonical_digest = compute_digest(payload)
-        self.signature = sign_data(payload)
+        self.signed_at = timezone.now()
+        self.signed_payload = self.build_canonical_payload()
+        self.canonical_digest = compute_digest(self.signed_payload)
+        self.signature = sign_data(self.signed_payload)
         self.save(*args, **kwargs)
 
     def is_valid_signature(self):
         from .signing import compute_digest, verify_signature
-        payload = self.build_canonical_payload()
-        if compute_digest(payload) != self.canonical_digest:
+        if not self.signed_payload or compute_digest(self.signed_payload) != self.canonical_digest:
             return False
-        return verify_signature(payload, self.signature)
+        return verify_signature(self.signed_payload, self.signature)
 
     def __str__(self):
         return f"JudgeRecord {self.record_id} ({self.judge.username} @ {self.event.title})"

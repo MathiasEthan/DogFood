@@ -82,10 +82,17 @@ export default function JudgeRecordVerificationPage({
           <div className="space-y-8">
             {/* Header */}
             <div className="text-center space-y-3">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span className="font-semibold tracking-wide">SIGNED JUDGE PARTICIPATION RECORD</span>
-              </div>
+              {data.is_valid ? (
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span className="font-semibold tracking-wide">SIGNATURE VERIFIED · SIGNED JUDGE PARTICIPATION RECORD</span>
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-950/60 border border-red-500/40 text-red-300 text-xs">
+                  <ShieldAlert className="w-4 h-4 text-red-400" />
+                  <span className="font-semibold tracking-wide">SIGNATURE INVALID — THIS RECORD WAS ALTERED</span>
+                </div>
+              )}
               <h1 className="text-3xl font-extrabold text-white tracking-tight">
                 Official Judge Credential
               </h1>
@@ -111,7 +118,7 @@ export default function JudgeRecordVerificationPage({
 
                 <div className="flex items-center gap-2">
                   <Badge className="bg-emerald-950 border border-emerald-500/40 text-emerald-300 text-xs">
-                    <CheckCircle2 className="w-3 h-3 mr-1" /> Publicly Verifiable
+                    <CheckCircle2 className="w-3 h-3 mr-1" /> Verifiable with public key
                   </Badge>
                   <Button
                     onClick={copyUrl}
@@ -141,7 +148,7 @@ export default function JudgeRecordVerificationPage({
                     Average Score Awarded
                   </span>
                   <span className="text-2xl font-bold text-emerald-400">
-                    {data.record.average_score_given.toFixed(2)}
+                    {data.record.average_score_given != null ? data.record.average_score_given.toFixed(2) : "—"}
                   </span>
                   <span className="text-[10px] text-slate-400 block mt-1">across all criteria</span>
                 </div>
@@ -180,12 +187,16 @@ export default function JudgeRecordVerificationPage({
                     <span className="text-slate-200">{data.canonical_digest}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-slate-500 block uppercase">HMAC-SHA256 Signature</span>
+                    <span className="text-[10px] text-slate-500 block uppercase">{data.signature_algorithm} Signature</span>
                     <span className="text-emerald-400">{data.signature}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase">Platform Public Key (Ed25519)</span>
+                    <span className="text-slate-300">{data.public_key_hex}</span>
                   </div>
                   <div className="flex items-center justify-between text-[10px] pt-1 border-t border-slate-800/60 text-slate-500">
                     <span>Algorithm: {data.signature_algorithm}</span>
-                    <span>Status: Verified Authentic</span>
+                    <span>Status: {data.is_valid ? "Verified Authentic" : "INVALID"}</span>
                   </div>
                 </div>
               </div>

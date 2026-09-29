@@ -23,7 +23,7 @@ For in-depth technical analysis, system design, and mathematical proofs, consult
 
 ### 1. Tier 1: Core Event Management & Participant Portals
 - **Role-Based Access Control:** Strict role isolation across `participant`, `judge`, `organizer`, and `admin`.
-- **Team Lifecycle:** Atomic creation, 8-character unique join codes, automatic member cap enforcement, and single-leader privileges.
+- **Team Lifecycle:** Atomic creation, shareable **invite links** (`/events/<id>?join=<code>`, one click to accept; works through sign-in) plus typed join codes, automatic member cap enforcement, single-leader privileges, and conflict-of-interest blocks (judges and the organizer can't join teams in their own event).
 - **Deadline Gatekeeper:** Submissions are strictly locked upon reaching `event.end_date` (evaluated server-side in UTC).
 - **Public & Peer Gallery:** Real-time search by title, tech stack, and team name, with track category filtering.
 
@@ -39,8 +39,8 @@ For in-depth technical analysis, system design, and mathematical proofs, consult
 
 ### 4. Tier 4 & Stretch: Extensibility, Cryptography & Data Sovereignty
 - **Signed REST Webhooks:** Dispatches cryptographically signed payloads (`X-DogFood-Signature: sha256=<hmac>`) for every action reachable in the UI.
-- **Cryptographic Vector SVG Certificates:** 1-click issuance of signed certificates for Winners (1st, 2nd, 3rd), Participants, and Judges, publicly verifiable at `/certificates/<code\>`.
-- **Signed Judge Participation Records:** Generates an HMAC-SHA256 signed credential summarizing judge evaluations, verifiable at `/verify/judge/<record_id\>`.
+- **Cryptographic Vector SVG Certificates:** 1-click issuance (after results are published) of **Ed25519-signed** certificates for Winners (ranked by the official normalized leaderboard), Participants, and Judges who scored. Publicly verifiable at `/certificates/<code\>`; re-issuing **revokes** superseded certificates instead of deleting them.
+- **Signed Judge Participation Records:** Ed25519-signed credential summarizing a judge's evaluations, verifiable at `/verify/judge/<record_id\>` — or **fully offline** with the public key from `/api/signing-key/` and `scripts/verify_record.py`. No trust in the server is required.
 - **Embeddable Gallery Widget:** Headless showcase at `/embed/events/<id\>/gallery/` with `postMessage` iframe auto-resizing protocol.
 - **Zero Organizer Lock-In:** 1-click lossless JSON event export and import with SHA-256 integrity checksum, plus batch team CSV ingestion.
 
@@ -111,6 +111,7 @@ On initial startup, `backend/entrypoint.sh` provisions default administrator acc
 | `/api/events/<id>/teams/create/` | POST | Authenticated | Register team and generate unique join code. |
 | `/api/events/<id>/teams/join/` | POST | Authenticated | Join team via join code. |
 | `/api/events/<id>/teams/leave/` | POST | Authenticated | Leave team. |
+| `/api/events/<id>/teams/lookup/?code=` | GET | Public (rate limited) | Powers invite links: team name + capacity for a code (no member details). |
 
 ### Submissions & Gallery
 | Endpoint | Method | Permission | Description |
@@ -144,18 +145,22 @@ On initial startup, `backend/entrypoint.sh` provisions default administrator acc
 ### Certificates, Judge Credentials & Portability (T4)
 | Endpoint | Method | Permission | Description |
 | :--- | :--- | :--- | :--- |
-| `/api/events/<id>/admin/certificates/generate/` | POST | Organizer | Issues signed certificates & signs judge records. |
+| `/api/events/<id>/admin/certificates/generate/` | POST | Organizer | Issues Ed25519-signed certificates & judge records (requires published results; revokes superseded ones). |
+| `/api/signing-key/` | GET | Public | Ed25519 public key (hex + PEM) that verifies every certificate and judge record. |
 | `/api/events/<id>/certificates/` | GET | Organizer | Lists all certificates issued for this event. |
 | `/api/my-certificates/` | GET | Authenticated | Lists personal credentials awarded to caller. |
-| `/api/certificates/<code>/` | GET | Public | Independent public certificate verification. |
+| `/api/certificates/<code>/` | GET | Public | Status (`valid` / `revoked` / `invalid`), signed claims, signature. |
 | `/api/certificates/<code>/download/` | GET | Public | Direct vector SVG certificate download. |
 | `/api/events/<id>/my-judge-record/` | GET | Appointed Judge| Judge's own signed participation credential. |
 | `/api/judges/records/<record_id>/verify/` | GET | Public | Independent verification of judge participation. |
 | `/api/events/<id>/admin/export/bulk-archive/` | GET | Organizer | Download lossless event JSON archive with SHA-256. |
-| `/api/events/admin/import/bulk-archive/` | POST | Organizer | Recreate full event structure from JSON archive. |
-| `/api/events/<id>/admin/import/teams-csv/` | POST | Organizer | Bulk import teams and members from CSV. |
-| `/api/events/<id>/admin/webhooks/` | GET / POST | Organizer | List or register signed webhook endpoints. |
-| `/api/events/<id>/admin/webhooks/<wid>/test/` | POST | Organizer | Sends immediate signed test ping to endpoint. |
+| `/api/events/admin/import/bulk-archive/` | POST | Organizer | Recreate an event from a JSON archive (checksum verified; people become fresh placeholder accounts, never existing ones). |
+| `/api/events/<id>/admin/import/teams-csv/` | POST | Organizer | Bulk import teams from CSV; same rules as the UI (capacity, one team per event, no judges/organizer); bad rows reported in `skipped`. |
+| `/api/events/<id>/webhooks/` | GET / POST | Organizer | List or register HMAC-signed webhook endpoints (`subscribed_events: []` or `["*"]` = all). Internal/private targets are refused (SSRF guard). |
+| `/api/events/<id>/webhooks/<wid>/` | PATCH / DELETE | Organizer | Update or remove an endpoint. |
+| `/api/events/<id>/webhooks/<wid>/test/` | POST | Organizer | Sends an immediate signed `ping`. |
+| `/api/events/<id>/webhooks/<wid>/deliveries/` | GET | Organizer | Delivery log; `.../<did>/redeliver/` retries one. |
+| `/api/events/webhook-events/` | GET | Public | Every event type a webhook can subscribe to. |
 
 ---
 
@@ -173,3 +178,9 @@ cd ../frontend
 npm run typecheck
 npm run build
 ```
+
+## Configuration notes (T4)
+- `SIGNING_PRIVATE_KEY` — base64 of a 32-byte Ed25519 seed. If unset, a key is derived from `SECRET_KEY` (stable across restarts; rotating `SECRET_KEY` rotates it). Set it explicitly in production.
+- `WEBHOOK_ALLOW_PRIVATE_TARGETS=True` — only for local development, to let webhooks reach a receiver on your own machine/LAN. Off by default: webhooks may only call public addresses, re-checked at send time, and redirects are never followed.
+- Verify any certificate or judge record yourself: `python scripts/verify_record.py http://localhost:8000/api/certificates/<code>/`
+

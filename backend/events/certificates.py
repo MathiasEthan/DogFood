@@ -11,6 +11,8 @@ def generate_certificate_svg(certificate):
     """
     recipient = html.escape(certificate.recipient_name)
     title = html.escape(certificate.title)
+    # Keep long titles inside the 1000px-wide frame
+    title_size = 34 if len(certificate.title) <= 36 else max(18, int(34 * 36 / len(certificate.title)))
     award = html.escape(certificate.award_title or "Official Recognition")
     event_title = html.escape(certificate.event.title)
     cert_code = html.escape(certificate.certificate_code)
@@ -19,6 +21,12 @@ def generate_certificate_svg(certificate):
 
     accent_color = "#10b981" if certificate.role == Certificate.Role.WINNER else "#3b82f6"
     seal_color = "#f59e0b" if certificate.role == Certificate.Role.WINNER else "#10b981"
+
+    revoked_banner = (
+        '<g transform="translate(500,350) rotate(-18)"><rect x="-260" y="-45" width="520" height="90" fill="rgba(220,38,38,0.18)" stroke="#dc2626" stroke-width="4" rx="8"/>'
+        '<text x="0" y="16" font-family="Courier, monospace" font-size="48" font-weight="bold" fill="#ef4444" text-anchor="middle" letter-spacing="10">REVOKED</text></g>'
+        if certificate.revoked_at else ''
+    )
 
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="1000" height="700">
   <defs>
@@ -58,7 +66,7 @@ def generate_certificate_svg(certificate):
 
   <!-- Header Banner -->
   <text x="500" y="110" font-family="Courier, monospace" font-size="12" fill="{accent_color}" letter-spacing="6" text-anchor="middle" font-weight="bold">OFFICIAL HACKATHON CREDENTIAL</text>
-  <text x="500" y="150" font-family="'Times New Roman', serif, Georgia" font-size="34" fill="#ffffff" letter-spacing="2" text-anchor="middle" font-weight="normal">{title.upper()}</text>
+  <text x="500" y="150" font-family="'Times New Roman', serif, Georgia" font-size="{title_size}" fill="#ffffff" letter-spacing="2" text-anchor="middle" font-weight="normal">{title.upper()}</text>
 
   <line x1="380" y1="175" x2="620" y2="175" stroke="url(#accentGrad)" stroke-width="2" />
 
@@ -86,7 +94,7 @@ def generate_certificate_svg(certificate):
     <line x1="0" y1="50" x2="220" y2="50" stroke="rgba(255,255,255,0.2)" stroke-width="1" />
     <text x="110" y="40" font-family="'Courier New', Courier, monospace" font-size="11" fill="#9ca3af" text-anchor="middle">{issued_date}</text>
     <text x="110" y="68" font-family="Courier, monospace" font-size="10" fill="#6b7280" letter-spacing="1" text-anchor="middle">DATE OF ISSUANCE</text>
-    <text x="110" y="90" font-family="Courier, monospace" font-size="8" fill="#4b5563" text-anchor="middle">HMAC: {short_sig}</text>
+    <text x="110" y="90" font-family="Courier, monospace" font-size="8" fill="#4b5563" text-anchor="middle">Ed25519: {short_sig}</text>
   </g>
 
   <!-- Right: Verification Code & Security ID -->
@@ -97,146 +105,129 @@ def generate_certificate_svg(certificate):
     <text x="110" y="90" font-family="Courier, monospace" font-size="8" fill="#4b5563" text-anchor="middle">PUBLICLY VERIFIABLE ONLINE</text>
   </g>
 
+{revoked_banner}
   <!-- Footer Tag -->
-  <text x="500" y="650" font-family="Courier, monospace" font-size="9" fill="#4b5563" letter-spacing="1" text-anchor="middle">ISSUED VIA PLATFORM REST API • CRYPTOGRAPHICALLY SECURED WITH HMAC-SHA256</text>
+  <text x="500" y="650" font-family="Courier, monospace" font-size="9" fill="#4b5563" letter-spacing="1" text-anchor="middle">VERIFY AT /certificates/{cert_code} • SIGNED WITH ED25519 (PUBLIC KEY: /api/signing-key/)</text>
 </svg>"""
     return svg
 
 
+class CertificatesNotReady(Exception):
+    pass
+
+
 def issue_event_certificates(event, issued_by=None):
     """
-    Issue certificates for all eligible participants, winners, and judges.
-    Also updates and cryptographically signs JudgeParticipationRecords for all active judges.
+    Issue (or re-issue) certificates for a finished event and sign judge participation records.
+
+    * Only after the organizer has published results - certificates must match the official standings.
+    * Winners come from the same Empirical-Bayes normalized standings as the public leaderboard
+      (views.compute_standings), never a separate raw average.
+    * Re-running is idempotent. Certificates that no longer match the standings (e.g. a team that
+      used to be 2nd) are revoked, not deleted, so old links still resolve and show "revoked".
+
+    Returns (active_certificates, records_signed, revoked_count).
     """
-    created_certificates = []
+    from .views import compute_standings
 
-    # 1. PARTICIPANTS & WINNERS
-    # Look up submissions and compute leaderboard placement
-    from .models import ProjectSubmission, ProjectEvaluation
-    submissions = ProjectSubmission.objects.filter(team__event=event, is_draft=False)
-    
-    # Simple rank calculation if results exist
-    ranked_submissions = []
-    for sub in submissions:
-        evals = sub.evaluations.all()
-        avg_score = sum(e.total_score for e in evals) / len(evals) if evals else 0.0
-        ranked_submissions.append((sub, avg_score))
+    if not event.results_published:
+        raise CertificatesNotReady('Publish the judging results before issuing certificates.')
 
-    ranked_submissions.sort(key=lambda item: item[1], reverse=True)
+    standings, _ = compute_standings(event)
+    keep_ids = set()
+    active = []
 
-    for rank, (sub, score) in enumerate(ranked_submissions, start=1):
+    def upsert(lookup, defaults):
+        cert = Certificate.objects.filter(event=event, **lookup).first()
+        if cert is None:
+            cert = Certificate.objects.create(event=event, **lookup, **defaults)
+        elif cert.revoked_at:
+            cert.revoked_at = None
+            cert.revocation_reason = ''
+            cert.save(update_fields=['revoked_at', 'revocation_reason'])
+        keep_ids.add(cert.pk)
+        active.append(cert)
+        return cert
+
+    place_names = {1: '1st Place Champion', 2: '2nd Place Runner-Up', 3: '3rd Place Winner'}
+
+    # 1. TEAMS & MEMBERS - rank by the official normalized standings; unscored projects get participation
+    for rank, row in enumerate(standings, start=1):
+        sub = row['submission']
         team = sub.team
-        is_winner = rank <= 3
-        award_title = "Participation"
-        role = Certificate.Role.PARTICIPANT
+        scored = row['normalized_score'] is not None
+        is_winner = scored and rank <= 3
+        award = place_names[rank] if is_winner else 'Participation'
+        role = Certificate.Role.WINNER if is_winner else Certificate.Role.PARTICIPANT
+        title_text = f"{award} - {event.title}" if is_winner else f"Certificate of Participation - {event.title}"
+        metadata = {
+            'team_id': team.id,
+            'team_name': team.name,
+            'submission_title': sub.title,
+            'rank': rank if is_winner else None,
+            'normalized_score': row['normalized_score'],
+        }
 
-        if rank == 1:
-            award_title = "1st Place Champion"
-            role = Certificate.Role.WINNER
-        elif rank == 2:
-            award_title = "2nd Place Runner-Up"
-            role = Certificate.Role.WINNER
-        elif rank == 3:
-            award_title = "3rd Place Winner"
-            role = Certificate.Role.WINNER
-
-        title_text = f"{award_title} - {event.title}" if is_winner else f"Certificate of Participation - {event.title}"
-
-        # Team level certificate
-        team_cert, _ = Certificate.objects.get_or_create(
-            event=event,
-            recipient_user=None,
-            role=role,
-            award_title=f"{award_title} (Team: {team.name})",
-            defaults={
-                'recipient_team': team,
-                'recipient_name': f"Team {team.name}",
-                'title': title_text,
-                'metadata': {
-                    'team_id': team.id,
-                    'team_name': team.name,
-                    'submission_title': sub.title,
-                    'rank': rank if is_winner else None,
-                    'score': score,
-                },
-            },
+        upsert(
+            {'recipient_user': None, 'recipient_team': team, 'role': role, 'award_title': f"{award} ({team.name})"},
+            {'recipient_name': team.name if team.name.lower().startswith('team ') else f"Team {team.name}", 'title': title_text, 'metadata': metadata},
         )
-        created_certificates.append(team_cert)
-
-        # Member individual certificates
         for member in team.memberships.select_related('user'):
             user = member.user
-            user_display_name = f"{user.first_name} {user.last_name}".strip() or user.username
-            member_cert, _ = Certificate.objects.get_or_create(
-                event=event,
-                recipient_user=user,
-                role=role,
-                award_title=f"{award_title} ({team.name})",
-                defaults={
+            upsert(
+                {'recipient_user': user, 'role': role, 'award_title': f"{award} ({team.name})"},
+                {
                     'recipient_team': team,
-                    'recipient_name': user_display_name,
+                    'recipient_name': f"{user.first_name} {user.last_name}".strip() or user.username,
                     'recipient_email': user.email or '',
                     'title': title_text,
-                    'metadata': {
-                        'team_id': team.id,
-                        'team_name': team.name,
-                        'submission_title': sub.title,
-                        'rank': rank if is_winner else None,
-                        'score': score,
-                    },
+                    'metadata': metadata,
                 },
             )
-            created_certificates.append(member_cert)
 
-    # 2. JUDGES: Issue Recognition Certificates & Signed Participation Records
-    judge_users = set(event.judges.all()) | {ev.judge for ev in ProjectEvaluation.objects.filter(submission__team__event=event)}
-
-    for judge in judge_users:
-        judge_name = f"{judge.first_name} {judge.last_name}".strip() or judge.username
-        judge_evals = ProjectEvaluation.objects.filter(submission__team__event=event, judge=judge)
-        evals_count = judge_evals.count()
-        first_eval = judge_evals.order_by('created_at').first()
-        last_eval = judge_evals.order_by('-created_at').first()
-
-        # Generate / Update Signed Judge Participation Record
-        jpr, _ = JudgeParticipationRecord.objects.get_or_create(
-            event=event,
-            judge=judge,
-        )
-        jpr.evaluations_count = evals_count
+    # 2. JUDGES - only judges who actually completed evaluations get a record and a certificate
+    from .models import ProjectEvaluation
+    records_signed = 0
+    evals = ProjectEvaluation.objects.filter(submission__team__event=event, submission__is_draft=False)
+    judge_ids = sorted(set(evals.values_list('judge_id', flat=True)))
+    for judge in event.judges.model.objects.filter(pk__in=judge_ids):
+        judge_evals = evals.filter(judge=judge)
+        count = judge_evals.count()
+        scores = list(judge_evals.values_list('total_score', flat=True))
+        jpr, _ = JudgeParticipationRecord.objects.get_or_create(event=event, judge=judge)
+        jpr.evaluations_count = count
         jpr.rubrics_scored_count = sum(e.scores.count() for e in judge_evals)
-        jpr.first_evaluation_at = first_eval.created_at if first_eval else None
-        jpr.last_evaluation_at = last_eval.created_at if last_eval else None
+        jpr.average_score_given = round(sum(scores) / len(scores), 2) if scores else None
+        jpr.first_evaluation_at = judge_evals.order_by('created_at').values_list('created_at', flat=True).first()
+        jpr.last_evaluation_at = judge_evals.order_by('-updated_at').values_list('updated_at', flat=True).first()
         jpr.sign_and_save()
+        records_signed += 1
 
-        # Judge Certificate
-        jcert, _ = Certificate.objects.get_or_create(
-            event=event,
-            recipient_user=judge,
-            role=Certificate.Role.JUDGE,
-            award_title="Distinguished Judge",
-            defaults={
-                'recipient_name': judge_name,
+        upsert(
+            {'recipient_user': judge, 'role': Certificate.Role.JUDGE, 'award_title': 'Judge'},
+            {
+                'recipient_name': f"{judge.first_name} {judge.last_name}".strip() or judge.username,
                 'recipient_email': judge.email or '',
-                'title': f"Excellence in Hackathon Evaluation - {event.title}",
-                'metadata': {
-                    'record_id': jpr.record_id,
-                    'evaluations_completed': evals_count,
-                },
+                'title': f"Certificate of Judging - {event.title}",
+                'metadata': {'record_id': jpr.record_id, 'evaluations_completed': count},
             },
         )
-        created_certificates.append(jcert)
 
-    # 3. Fire Webhook
+    # 3. Revoke anything this run did not re-confirm
+    now = timezone.now()
+    stale = event.certificates.filter(revoked_at__isnull=True).exclude(pk__in=keep_ids)
+    revoked_count = stale.update(revoked_at=now, revocation_reason='Superseded by a later issuance')
+
     dispatch_webhook(
         event,
         WebhookEndpoint.EventType.CERTIFICATES_ISSUED,
         {
             'event_id': event.id,
             'event_title': event.title,
-            'certificates_count': len(created_certificates),
-            'issued_at': timezone.now().isoformat(),
+            'certificates_count': len(active),
+            'records_signed': records_signed,
+            'revoked_count': revoked_count,
+            'issued_at': now.isoformat(),
         },
     )
-
-    return created_certificates
+    return active, records_signed, revoked_count

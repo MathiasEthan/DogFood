@@ -1,5 +1,6 @@
 from rest_framework import status
 from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -29,7 +30,7 @@ from .community import (
     OrganizerOnlyMixin,
 )
 from .assignment import JudgeAssignmentEngine
-from .webhooks import dispatch_webhook, redeliver_webhook
+from .webhooks import UnsafeWebhookTarget, dispatch_webhook, redeliver_webhook, send_test_ping, validate_webhook_url
 from .serializers import (
     EventListSerializer,
     EventDetailSerializer,
@@ -104,9 +105,9 @@ class CreateTeamView(APIView):
         event = get_object_or_404(Event, pk=pk)
         user = request.user
 
-        if event.is_judge(user):
+        if event.is_judge(user) or event.created_by_id == user.id:
             return Response(
-                {'detail': 'You are a judge for this event and cannot join or create a team in it (conflict of interest).'},
+                {'detail': 'Judges and the organizer of this event cannot join or create a team in it (conflict of interest).'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -165,9 +166,9 @@ class JoinTeamView(APIView):
         event = get_object_or_404(Event, pk=pk)
         user = request.user
 
-        if event.is_judge(user):
+        if event.is_judge(user) or event.created_by_id == user.id:
             return Response(
-                {'detail': 'You are a judge for this event and cannot join or create a team in it (conflict of interest).'},
+                {'detail': 'Judges and the organizer of this event cannot join or create a team in it (conflict of interest).'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -220,6 +221,42 @@ class JoinTeamView(APIView):
             {
                 'message': f'Successfully joined team "{team.name}"!',
                 'team': TeamSerializer(team).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class TeamInviteLookupView(APIView):
+    """
+    GET /api/events/<id>/teams/lookup/?code=HACK-XXXX
+
+    Powers invite links (/events/<id>?join=<code>): shows who invited you before you join.
+    Returns only the team name and capacity - never member details. Rate limited.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'team_lookup'
+
+    def get(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        code = (request.query_params.get('code') or '').strip().upper()
+        team = Team.objects.filter(event=event, code__iexact=code).first() if code else None
+        if not team:
+            return Response({'detail': 'This invite link is invalid or has expired.'}, status=status.HTTP_404_NOT_FOUND)
+        already = bool(
+            request.user.is_authenticated and TeamMember.objects.filter(team__event=event, user=request.user).exists()
+        )
+        return Response(
+            {
+                'event_id': event.id,
+                'event_title': event.title,
+                'team_name': team.name,
+                'code': team.code,
+                'leader_username': team.leader.username,
+                'member_count': team.member_count,
+                'max_size': event.max_team_size,
+                'is_full': team.is_full,
+                'already_in_a_team': already,
             },
             status=status.HTTP_200_OK,
         )
@@ -1018,6 +1055,37 @@ def anonymized_evaluations(evals):
     return out
 
 
+class MyAssignmentsView(APIView):
+    """GET /api/events/<id>/my-assignments/ - a judge's own queue: assigned projects and their status."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        if not event.is_judge(request.user) and not _is_platform_admin(request.user):
+            return Response({'detail': 'Only judges of this event have an assignment queue.'}, status=status.HTTP_403_FORBIDDEN)
+        rows = JudgeAssignment.objects.filter(event=event, judge=request.user).select_related('submission', 'submission__team')
+        items = [
+            {
+                'submission_id': a.submission_id,
+                'title': a.submission.title,
+                'team_name': a.submission.team.name,
+                'status': a.status,
+                'completed_at': a.completed_at,
+            }
+            for a in rows.order_by('status', 'submission__title')
+        ]
+        done = sum(1 for i in items if i['status'] == JudgeAssignment.Status.COMPLETED)
+        return Response(
+            {
+                'assignments_exist': JudgeAssignment.objects.filter(event=event).exists(),
+                'assigned': len(items),
+                'completed': done,
+                'items': items,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class EventLeaderboardView(APIView):
     """
     Judging leaderboard. Anti-anchoring: hidden from everyone (including judges) until the
@@ -1351,6 +1419,46 @@ class AdminExportEvaluationAuditCSVView(ManagerCSVView):
 
 # --------------------------------------------------------------------------- T4: webhooks
 
+def _normalize_subscriptions(value):
+    """[] or ['*'] both mean 'all events'."""
+    if value in (None, '', '*'):
+        return []
+    if isinstance(value, list):
+        return [] if '*' in value else value
+    return value
+
+
+class WebhookEventTypesView(APIView):
+    """GET /api/events/webhook-events/ - every event type a webhook can subscribe to."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response(
+            {'event_types': [{'value': v, 'label': l} for v, l in WebhookEndpoint.EventType.choices]},
+            status=status.HTTP_200_OK,
+        )
+
+
+class EventWebhookTestView(OrganizerOnlyMixin, APIView):
+    """POST /api/events/<id>/webhooks/<wid>/test/ - send a signed 'ping' to one endpoint."""
+
+    def post(self, request, pk, webhook_pk):
+        event, denied = self.get_managed_event(request, pk)
+        if denied:
+            return denied
+        endpoint = get_object_or_404(WebhookEndpoint, pk=webhook_pk, event=event)
+        delivery = send_test_ping(endpoint)
+        return Response(
+            {
+                'delivery_id': delivery.id,
+                'status': delivery.status,
+                'status_code': delivery.response_status,
+                'response_body': delivery.response_body[:500],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 def webhook_dict(endpoint, reveal_secret=False):
     return {
         'id': endpoint.id,
@@ -1382,8 +1490,12 @@ class EventWebhooksView(OrganizerOnlyMixin, APIView):
         target_url = (request.data.get('target_url') or '').strip()
         if not target_url:
             return Response({'target_url': 'This field is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validate_webhook_url(target_url)
+        except UnsafeWebhookTarget as exc:
+            return Response({'target_url': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        subscribed_events = request.data.get('subscribed_events') or []
+        subscribed_events = _normalize_subscriptions(request.data.get('subscribed_events'))
         if not isinstance(subscribed_events, list):
             return Response({'subscribed_events': 'Must be a list of event type strings.'}, status=status.HTTP_400_BAD_REQUEST)
         valid_types = set(WebhookEndpoint.EventType.values)
@@ -1394,11 +1506,16 @@ class EventWebhooksView(OrganizerOnlyMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        custom_secret = (request.data.get('secret') or '').strip()
+        if custom_secret and not (16 <= len(custom_secret) <= 64):
+            return Response({'secret': 'Custom secrets must be 16-64 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+
         endpoint = WebhookEndpoint.objects.create(
             event=event,
             target_url=target_url,
             subscribed_events=subscribed_events,
             created_by=request.user,
+            **({'secret': custom_secret} if custom_secret else {}),
         )
         # The secret is only ever readable in full at creation time - like an API key.
         return Response(webhook_dict(endpoint, reveal_secret=True), status=status.HTTP_201_CREATED)
@@ -1417,11 +1534,19 @@ class EventWebhookDetailView(OrganizerOnlyMixin, APIView):
         endpoint = self._get_endpoint(event, webhook_pk)
 
         if 'target_url' in request.data:
-            endpoint.target_url = (request.data.get('target_url') or '').strip()
+            new_url = (request.data.get('target_url') or '').strip()
+            try:
+                validate_webhook_url(new_url)
+            except UnsafeWebhookTarget as exc:
+                return Response({'target_url': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            endpoint.target_url = new_url
         if 'is_active' in request.data:
-            endpoint.is_active = bool(request.data.get('is_active'))
+            raw_active = request.data.get('is_active')
+            endpoint.is_active = raw_active.lower() in ('1', 'true', 'yes') if isinstance(raw_active, str) else bool(raw_active)
         if 'subscribed_events' in request.data:
-            subscribed_events = request.data.get('subscribed_events') or []
+            subscribed_events = _normalize_subscriptions(request.data.get('subscribed_events'))
+            if not isinstance(subscribed_events, list):
+                return Response({'subscribed_events': 'Must be a list of event type strings.'}, status=status.HTTP_400_BAD_REQUEST)
             valid_types = set(WebhookEndpoint.EventType.values)
             invalid = [e for e in subscribed_events if e not in valid_types]
             if invalid:
@@ -1456,6 +1581,8 @@ class EventWebhookDeliveriesView(OrganizerOnlyMixin, APIView):
                     'event_type': d.event_type,
                     'status': d.status,
                     'response_status': d.response_status,
+                    'response_body': d.response_body[:500],
+                    'payload': d.payload,
                     'attempt_count': d.attempt_count,
                     'created_at': d.created_at,
                     'delivered_at': d.delivered_at,
@@ -1493,135 +1620,136 @@ from .certificates import generate_certificate_svg, issue_event_certificates
 from .portability import export_event_archive, import_event_archive, import_teams_csv
 
 
+def certificate_dict(cert, include_private=False):
+    from .signing import SIGNATURE_ALGORITHM, public_key_hex
+    data = {
+        'id': cert.id,
+        'certificate_code': cert.certificate_code,
+        'code': cert.certificate_code,
+        'event': cert.event_id,
+        'event_title': cert.signed_payload.get('event_title', cert.event.title),
+        'recipient_name': cert.recipient_name,
+        'role': cert.role,
+        'title': cert.title,
+        'award_title': cert.award_title,
+        'issued_at': cert.issued_at,
+        'status': cert.status,
+        'is_valid': cert.status == 'valid',
+        'revoked_at': cert.revoked_at,
+        'revocation_reason': cert.revocation_reason,
+        'signature': cert.signature,
+        'signature_algorithm': SIGNATURE_ALGORITHM,
+        'public_key_hex': public_key_hex(),
+        'signed_payload': cert.signed_payload,
+        'download_url': f'/api/certificates/{cert.certificate_code}/download/',
+        'verification_url': f'/certificates/{cert.certificate_code}',
+    }
+    if include_private:
+        data['recipient_email'] = cert.recipient_email
+    return data
+
+
+def judge_record_dict(rec):
+    from .signing import SIGNATURE_ALGORITHM, public_key_hex
+    payload = rec.signed_payload or {}
+    return {
+        'record_id': rec.record_id,
+        'judge_username': payload.get('judge_username', rec.judge.username),
+        'event_title': payload.get('event_title', rec.event.title),
+        'is_valid': rec.is_valid_signature(),
+        'signature_algorithm': SIGNATURE_ALGORITHM,
+        'signature': rec.signature,
+        'public_key_hex': public_key_hex(),
+        'canonical_digest': rec.canonical_digest,
+        'record': payload,
+        'verification_url': f'/verify/judge/{rec.record_id}',
+        'verified_at': timezone.now().isoformat(),
+    }
+
+
+def _find_certificate(code):
+    from .models import Certificate
+    cert = Certificate.objects.filter(certificate_code__iexact=code).select_related('event').first()
+    if not cert and code.isdigit():
+        cert = Certificate.objects.filter(pk=int(code)).select_related('event').first()
+    return cert
+
+
 class GenerateCertificatesView(OrganizerOnlyMixin, APIView):
-    """POST /api/events/<id>/admin/certificates/generate/ - Mints certificates and signed judge records."""
+    """POST /api/events/<id>/admin/certificates/generate/ - issue certificates + sign judge records."""
 
     def post(self, request, pk):
+        from .certificates import CertificatesNotReady
         event, denied = self.get_managed_event(request, pk)
         if denied:
             return denied
-        certs = issue_event_certificates(event, issued_by=request.user)
+        try:
+            certs, records_signed, revoked = issue_event_certificates(event, issued_by=request.user)
+        except CertificatesNotReady as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
             {
-                'message': f'Successfully generated {len(certs)} certificate(s) for {event.title}.',
+                'message': f'Issued {len(certs)} certificate(s) and signed {records_signed} judge record(s).',
                 'certificates_count': len(certs),
+                'records_signed': records_signed,
+                'revoked_count': revoked,
             },
             status=status.HTTP_201_CREATED,
         )
 
 
 class EventCertificatesListView(OrganizerOnlyMixin, APIView):
-    """GET /api/events/<id>/certificates/ - Lists all issued certificates for the event."""
+    """GET /api/events/<id>/certificates/ - organizer view of every certificate (incl. revoked)."""
 
     def get(self, request, pk):
         event, denied = self.get_managed_event(request, pk)
         if denied:
             return denied
-        certs = event.certificates.all()
-        return Response(
-            [
-                {
-                    'id': c.id,
-                    'code': c.certificate_code,
-                    'recipient_name': c.recipient_name,
-                    'role': c.role,
-                    'title': c.title,
-                    'award_title': c.award_title,
-                    'issued_at': c.issued_at,
-                    'is_valid': c.is_valid_signature(),
-                }
-                for c in certs
-            ],
-            status=status.HTTP_200_OK,
-        )
+        certs = event.certificates.select_related('event').order_by('revoked_at', 'role', 'recipient_name')
+        return Response([certificate_dict(c, include_private=True) for c in certs], status=status.HTTP_200_OK)
 
 
 class MyCertificatesListView(APIView):
-    """GET /api/events/<id>/my-certificates/ - Returns certificates for current user / their team."""
+    """GET /api/events/<id>/my-certificates/ (one event) or /api/my-certificates/ (all events)."""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, pk):
-        event = get_object_or_404(Event, pk=pk)
-        membership = TeamMember.objects.filter(team__event=event, user=request.user).first()
-        my_team = membership.team if membership else None
-
+    def get(self, request, pk=None):
         from django.db.models import Q
-        q = Q(recipient_user=request.user)
-        if my_team:
-            q |= Q(recipient_team=my_team)
-
-        certs = event.certificates.filter(q)
-        return Response(
-            [
-                {
-                    'id': c.id,
-                    'code': c.certificate_code,
-                    'recipient_name': c.recipient_name,
-                    'role': c.role,
-                    'title': c.title,
-                    'award_title': c.award_title,
-                    'issued_at': c.issued_at,
-                    'download_url': f'/api/certificates/{c.certificate_code}/download/',
-                }
-                for c in certs
-            ],
-            status=status.HTTP_200_OK,
-        )
+        from .models import Certificate
+        q = Q(recipient_user=request.user) | Q(recipient_team__memberships__user=request.user, recipient_user__isnull=True)
+        certs = Certificate.objects.filter(q, revoked_at__isnull=True).select_related('event').distinct()
+        if pk is not None:
+            certs = certs.filter(event_id=pk)
+        return Response([certificate_dict(c) for c in certs], status=status.HTTP_200_OK)
 
 
 class PublicCertificateDetailView(APIView):
-    """GET /api/certificates/<code_or_id>/ - Public verification of certificate authenticity."""
+    """GET /api/certificates/<code>/ - public verification (valid / revoked / invalid)."""
     permission_classes = [AllowAny]
 
     def get(self, request, code):
-        from .models import Certificate
-        cert = Certificate.objects.filter(certificate_code__iexact=code).select_related('event').first()
-        if not cert and code.isdigit():
-            cert = Certificate.objects.filter(pk=int(code)).select_related('event').first()
+        cert = _find_certificate(code)
         if not cert:
             return Response({'detail': 'Certificate not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        is_valid = cert.is_valid_signature()
-        return Response(
-            {
-                'code': cert.certificate_code,
-                'is_valid': is_valid,
-                'recipient_name': cert.recipient_name,
-                'role': cert.role,
-                'title': cert.title,
-                'award_title': cert.award_title,
-                'event_id': cert.event_id,
-                'event_title': cert.event.title,
-                'issued_at': cert.issued_at,
-                'signature': cert.signature,
-                'metadata': cert.metadata,
-                'download_url': f'/api/certificates/{cert.certificate_code}/download/',
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response(certificate_dict(cert), status=status.HTTP_200_OK)
 
 
 class DownloadCertificateSVGView(APIView):
-    """GET /api/certificates/<code_or_id>/download/ - Returns printable standalone SVG."""
+    """GET /api/certificates/<code>/download/ - printable standalone SVG."""
     permission_classes = [AllowAny]
 
     def get(self, request, code):
-        from .models import Certificate
         from django.http import HttpResponse
-        cert = Certificate.objects.filter(certificate_code__iexact=code).select_related('event').first()
-        if not cert and code.isdigit():
-            cert = Certificate.objects.filter(pk=int(code)).select_related('event').first()
+        cert = _find_certificate(code)
         if not cert:
             return Response({'detail': 'Certificate not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        svg_content = generate_certificate_svg(cert)
-        resp = HttpResponse(svg_content, content_type='image/svg+xml')
+        resp = HttpResponse(generate_certificate_svg(cert), content_type='image/svg+xml')
         resp['Content-Disposition'] = f'attachment; filename="certificate_{cert.certificate_code}.svg"'
         return resp
 
 
 class PublicJudgeRecordVerifyView(APIView):
-    """GET /api/judges/records/<record_id>/verify/ - Publicly verifiable signed judge record."""
+    """GET /api/judges/records/<record_id>/verify/ - public, offline-verifiable judge record."""
     permission_classes = [AllowAny]
 
     def get(self, request, record_id):
@@ -1629,25 +1757,11 @@ class PublicJudgeRecordVerifyView(APIView):
         rec = JudgeParticipationRecord.objects.filter(record_id__iexact=record_id).select_related('event', 'judge').first()
         if not rec:
             return Response({'detail': 'Judge record not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        is_valid = rec.is_valid_signature()
-        payload = rec.build_canonical_payload()
-        return Response(
-            {
-                'record_id': rec.record_id,
-                'is_valid': is_valid,
-                'signature_algorithm': 'HMAC-SHA256',
-                'signature': rec.signature,
-                'canonical_digest': rec.canonical_digest,
-                'record': payload,
-                'verified_at': timezone.now().isoformat(),
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response(judge_record_dict(rec), status=status.HTTP_200_OK)
 
 
 class MyJudgeRecordView(APIView):
-    """GET /api/events/<id>/my-judge-record/ - Authenticated judge retrieves their signed record."""
+    """GET /api/events/<id>/my-judge-record/ - a judge's own signed record."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -1656,18 +1770,16 @@ class MyJudgeRecordView(APIView):
         rec = JudgeParticipationRecord.objects.filter(event=event, judge=request.user).first()
         if not rec:
             return Response({'detail': 'No judge record found for this event.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(judge_record_dict(rec), status=status.HTTP_200_OK)
 
-        return Response(
-            {
-                'record_id': rec.record_id,
-                'is_valid': rec.is_valid_signature(),
-                'signature': rec.signature,
-                'canonical_digest': rec.canonical_digest,
-                'record': rec.build_canonical_payload(),
-                'verification_url': f'/verify/judge/{rec.record_id}',
-            },
-            status=status.HTTP_200_OK,
-        )
+
+class SigningKeyView(APIView):
+    """GET /api/signing-key/ - the Ed25519 public key that verifies certificates and judge records."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .signing import signing_key_document
+        return Response(signing_key_document(), status=status.HTTP_200_OK)
 
 
 class BulkEventExportView(OrganizerOnlyMixin, APIView):
@@ -1751,3 +1863,98 @@ class BulkTeamImportCSVView(OrganizerOnlyMixin, APIView):
             )
         except Exception as e:
             return Response({'detail': f'CSV import failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class JudgeScoresView(APIView):
+    """
+    T2 Acceptance check & Role Isolation endpoint:
+    GET /api/judge/scores/
+    GET /api/events/<pk>/judging/scores/
+
+    Rules:
+      * Unauthenticated requests are rejected (401 Unauthorized).
+      * Participants are rejected (403 Forbidden).
+      * Judges may view their own scores (200 OK).
+      * When ?judge=<name> is provided:
+          - If the caller is not an admin and does not match the target judge,
+            the backend strictly refuses with 403 Forbidden.
+          - If the caller is the target judge (or an admin), returns 200 OK.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk=None):
+        user = request.user
+        is_admin = _is_platform_admin(user)
+
+        # 1. Check if user is a participant (or not a judge of any event)
+        is_judge_role = (getattr(user, 'role', '') == 'judge') or Event.objects.filter(judges=user).exists()
+        if not is_admin and not is_judge_role:
+            return Response(
+                {'detail': 'Participants cannot access judge score sheets.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # 2. Check peer scores parameter
+        target_judge_param = (
+            request.query_params.get('judge')
+            or request.query_params.get('judge_id')
+            or request.query_params.get('judge_username')
+        )
+
+        target_judge = user
+        if target_judge_param:
+            target_str = str(target_judge_param).strip().lower()
+            current_username = (user.username or '').lower()
+            current_id = str(user.id)
+
+            is_self = (
+                target_str == current_username
+                or target_str == current_id
+                or (hasattr(user, 'email') and target_str == (user.email or '').lower())
+            )
+
+            if not is_self and not is_admin:
+                return Response(
+                    {'detail': 'Role isolation violation: Judges are forbidden from viewing peer score sheets.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Resolve target user
+            from django.contrib.auth import get_user_model
+            from django.db.models import Q
+            UserModel = get_user_model()
+            found = UserModel.objects.filter(
+                Q(username__iexact=target_str) | Q(id__iexact=target_str) | Q(email__iexact=target_str)
+            ).first()
+            if found:
+                target_judge = found
+
+        # 3. Retrieve evaluations
+        evaluations_qs = ProjectEvaluation.objects.filter(judge=target_judge)
+        if pk:
+            evaluations_qs = evaluations_qs.filter(submission__team__event_id=pk)
+
+        evaluations_qs = evaluations_qs.select_related('submission', 'submission__team').prefetch_related('scores', 'scores__rubric')
+
+        scores_data = []
+        for ev in evaluations_qs:
+            rubric_scores = [
+                {'rubric': s.rubric.title, 'score': s.score, 'max_score': s.rubric.max_score}
+                for s in ev.scores.all()
+            ]
+            scores_data.append({
+                'project_id': ev.submission.id,
+                'project_title': ev.submission.title,
+                'team_name': ev.submission.team.name,
+                'total_score': ev.total_score,
+                'feedback': ev.feedback,
+                'scores': rubric_scores,
+                'evaluated_at': ev.updated_at.isoformat() if ev.updated_at else None,
+            })
+
+        return Response({
+            'judge': target_judge.username,
+            'count': len(scores_data),
+            'scores': scores_data,
+        }, status=status.HTTP_200_OK)
+

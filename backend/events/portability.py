@@ -25,6 +25,40 @@ from .webhooks import dispatch_webhook
 User = get_user_model()
 
 
+class ArchiveIntegrityError(ValueError):
+    pass
+
+
+def _unique_username(base):
+    base = (base or 'imported')[:120]
+    candidate = base
+    n = 1
+    while User.objects.filter(username=candidate).exists():
+        n += 1
+        candidate = f"{base}_imp{n}"
+    return candidate
+
+
+def _unique_email(preferred, username):
+    email = (preferred or '').strip().lower()
+    if not email or User.objects.filter(email__iexact=email).exists():
+        email = f"{username}.{secrets.token_hex(3)}@imported.local"
+    return email
+
+
+def _placeholder_user(username, email=''):
+    """
+    Create a NEW account that cannot log in until an admin sets a password.
+    Archive imports never attach existing accounts: a crafted archive could otherwise put
+    real users (or judges) onto teams without their consent.
+    """
+    uname = _unique_username(username)
+    user = User(username=uname, email=_unique_email(email, uname), role=User.Role.PARTICIPANT)
+    user.set_unusable_password()
+    user.save()
+    return user
+
+
 def export_event_archive(event):
     """
     Export the complete event and all its relational sub-resources
@@ -180,6 +214,13 @@ def import_event_archive(archive_data, organizer_user):
     if not event_data or not event_data.get('title'):
         raise ValueError("Invalid event archive: missing event payload or title.")
 
+    # Integrity: the export embeds SHA-256 of its own body; reject edited or truncated archives.
+    claimed = archive_data.get('checksum')
+    if claimed:
+        body = {k: v for k, v in archive_data.items() if k != 'checksum'}
+        if compute_digest(body) != claimed:
+            raise ArchiveIntegrityError('Archive checksum mismatch: the file was modified or corrupted.')
+
     vr = event_data.get('voting_rules', {})
 
     with transaction.atomic():
@@ -193,7 +234,7 @@ def import_event_archive(archive_data, organizer_user):
             location=event_data.get('location', 'Online'),
             prize_pool=event_data.get('prize_pool', ''),
             max_team_size=event_data.get('max_team_size', 4),
-            results_published=event_data.get('results_published', False),
+            results_published=False,  # evaluations are not imported, so there is nothing to publish yet
             created_by=organizer_user,
             community_voting_start=vr.get('window_start'),
             community_voting_end=vr.get('window_end'),
@@ -223,14 +264,12 @@ def import_event_archive(archive_data, organizer_user):
             if not leader_username and members_info:
                 leader_username = members_info[0]['username']
 
-            leader_user = None
-            if leader_username:
-                leader_user, _ = User.objects.get_or_create(
-                    username=leader_username,
-                    defaults={'email': f"{leader_username}@imported.local", 'role': User.Role.PARTICIPANT},
-                )
-            else:
-                leader_user = organizer_user
+            # Every imported person becomes a fresh placeholder account (see _placeholder_user)
+            people = {}
+            for m in members_info:
+                if m.get('username') and m['username'] not in people:
+                    people[m['username']] = _placeholder_user(m['username'], m.get('email'))
+            leader_user = people.get(leader_username) or organizer_user
 
             team_code = t_info.get('code')
             if not team_code or Team.objects.filter(code=team_code).exists():
@@ -245,15 +284,8 @@ def import_event_archive(archive_data, organizer_user):
                 code=team_code,
             )
 
-            for m in members_info:
-                u, _ = User.objects.get_or_create(
-                    username=m['username'],
-                    defaults={'email': m.get('email') or f"{m['username']}@imported.local", 'role': User.Role.PARTICIPANT},
-                )
-                TeamMember.objects.get_or_create(
-                    team=team,
-                    user=u,
-                )
+            for u in people.values():
+                TeamMember.objects.create(team=team, user=u)
 
             # Submissions
             for s in t_info.get('submissions', []):
@@ -289,53 +321,75 @@ def import_teams_csv(event, csv_content):
     """
     Bulk import teams and participants from CSV.
     Expected header: team_name, username, [email], [is_leader]
+
+    Existing accounts are linked by username (that is the point of a roster import), but every row
+    goes through the same rules as the UI: one team per user per event, team capacity, and no
+    judges/organizer of this event on a team (conflict of interest). Bad rows are skipped and reported;
+    good rows are still imported.
     """
+    from django.core.exceptions import ValidationError
+
     if isinstance(csv_content, bytes):
         csv_content = csv_content.decode('utf-8-sig')
 
     reader = csv.DictReader(io.StringIO(csv_content))
     teams_created = 0
     members_added = 0
+    users_created = 0
+    skipped = []
+    judge_ids = set(event.judges.values_list('id', flat=True))
 
     with transaction.atomic():
         team_cache = {}
 
-        for row in reader:
+        for line_no, row in enumerate(reader, start=2):
             team_name = (row.get('team_name') or row.get('team') or '').strip()
             username = (row.get('username') or row.get('user') or '').strip()
             email = (row.get('email') or '').strip()
-            is_leader_raw = (row.get('is_leader') or row.get('leader') or '').strip().lower()
-            is_leader = is_leader_raw in ('1', 'true', 'yes', 'y')
+            is_leader = (row.get('is_leader') or row.get('leader') or '').strip().lower() in ('1', 'true', 'yes', 'y')
 
             if not team_name or not username:
+                skipped.append({'line': line_no, 'reason': 'team_name and username are required'})
                 continue
 
-            user, _ = User.objects.get_or_create(
-                username=username,
-                defaults={'email': email or f"{username}@hackathon.local", 'role': User.Role.PARTICIPANT},
-            )
+            user = User.objects.filter(username=username).first()
+            if user is None:
+                user = User(username=username, email=_unique_email(email, username), role=User.Role.PARTICIPANT)
+                user.set_unusable_password()
+                user.save()
+                users_created += 1
 
-            if team_name not in team_cache:
-                team, created = Team.objects.get_or_create(
-                    event=event,
-                    name=team_name,
-                    defaults={'leader': user},
-                )
-                if created:
+            if user.id in judge_ids or user.id == event.created_by_id:
+                skipped.append({'line': line_no, 'username': username,
+                                'reason': 'is a judge or the organizer of this event (conflict of interest)'})
+                continue
+
+            team = team_cache.get(team_name)
+            if team is None:
+                team = Team.objects.filter(event=event, name__iexact=team_name).first()
+                if team is None:
+                    team = Team.objects.create(event=event, name=team_name, leader=user)
                     teams_created += 1
                 team_cache[team_name] = team
-            else:
-                team = team_cache[team_name]
 
-            _, member_created = TeamMember.objects.get_or_create(
-                team=team,
-                user=user,
-            )
+            if not TeamMember.objects.filter(team=team, user=user).exists():
+                try:
+                    with transaction.atomic():
+                        TeamMember.objects.create(team=team, user=user)
+                    members_added += 1
+                except ValidationError as exc:
+                    skipped.append({'line': line_no, 'username': username, 'reason': '; '.join(exc.messages)})
+                    continue
+
             if is_leader and team.leader_id != user.id:
                 team.leader = user
                 team.save(update_fields=['leader'])
-            if member_created:
-                members_added += 1
+
+        # Remove teams we created that ended up with nobody in them (all rows rejected)
+        for team in team_cache.values():
+            if not team.memberships.exists():
+                team.delete()
+                teams_created -= 1
 
         dispatch_webhook(
             event,
@@ -347,4 +401,9 @@ def import_teams_csv(event, csv_content):
             },
         )
 
-    return {'teams_created': teams_created, 'members_added': members_added}
+    return {
+        'teams_created': teams_created,
+        'members_added': members_added,
+        'users_created': users_created,
+        'skipped': skipped,
+    }

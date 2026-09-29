@@ -148,6 +148,23 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
   const isEventJudge = Boolean(user && (user.role === "admin" || event?.event_judges?.some((j) => j.id === user.id)))
   const isJudgeOrOrganizer = isManager || isEventJudge
 
+  // Judge's own assignment queue: once assignments exist, only assigned projects can be scored
+  const [queue, setQueue] = useState<{ exist: boolean; assigned: number; completed: number; status: Record<number, string> } | null>(null)
+  useEffect(() => {
+    if (!isEventJudge) return
+    api
+      .getMyAssignments(eventId)
+      .then((q) =>
+        setQueue({
+          exist: q.assignments_exist,
+          assigned: q.assigned,
+          completed: q.completed,
+          status: Object.fromEntries(q.items.map((i) => [i.submission_id, i.status])),
+        })
+      )
+      .catch(() => setQueue(null))
+  }, [isEventJudge, eventId, evaluatingSubmission])
+
   const getMediaUrl = (url: string | null) => {
     if (!url) return null
     if (url.startsWith("http")) return url
@@ -228,6 +245,16 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                 : "Explore published projects built during this hackathon."}
             </p>
           </div>
+
+          {isEventJudge && queue?.exist && (
+            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/5 text-xs font-mono flex items-center justify-between">
+              <span>
+                Your review queue: <strong className="text-foreground">{queue.completed}</strong> of{" "}
+                <strong className="text-foreground">{queue.assigned}</strong> assigned projects scored
+              </span>
+              <span className="text-muted-foreground">Only projects assigned to you can be scored</span>
+            </div>
+          )}
 
           {/* Tab Selector: Projects vs Leaderboard */}
           <div className="flex items-center justify-between border-b border-border/20 pb-3 gap-4">
@@ -346,7 +373,19 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                               </div>
 
                               {/* Judge Evaluate Button */}
-                              {isEventJudge && (
+                              {isEventJudge && queue?.exist && queue.status[sub.id] && (
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[9px] uppercase py-0 ${
+                                    queue.status[sub.id] === "COMPLETED"
+                                      ? "text-emerald-400 border-emerald-500/30"
+                                      : "text-amber-400 border-amber-500/30"
+                                  }`}
+                                >
+                                  {queue.status[sub.id] === "COMPLETED" ? "Scored by you" : "Assigned to you"}
+                                </Badge>
+                              )}
+                              {isEventJudge && (!queue?.exist || Boolean(queue.status[sub.id])) && (
                                 <Button
                                   size="sm"
                                   onClick={() => setEvaluatingSubmission(sub)}
@@ -794,14 +833,14 @@ export default function GalleryPage({ params }: { params: Promise<{ id: string }
                   <div className="flex items-center justify-between">
                     <span className="text-slate-400">Average Score Given:</span>
                     <span className="font-bold text-amber-300">
-                      {judgeRecord.record.average_score_given.toFixed(2)}
+                      {judgeRecord.record.average_score_given != null ? judgeRecord.record.average_score_given.toFixed(2) : "—"}
                     </span>
                   </div>
                 </div>
 
                 <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5 break-all text-[11px]">
                   <span className="text-slate-500 block text-[10px] uppercase">
-                    Cryptographic Signature (HMAC-SHA256)
+                    Cryptographic Signature (Ed25519)
                   </span>
                   <span className="text-emerald-400">{judgeRecord.signature}</span>
                 </div>

@@ -28,10 +28,14 @@ from .views import (
     AdminExportAssignmentsCSVView,
     AdminExportEvaluationAuditCSVView,
     PublishResultsView,
+    MyAssignmentsView,
     EventWebhooksView,
     EventWebhookDetailView,
     EventWebhookDeliveriesView,
     WebhookRedeliverView,
+    WebhookEventTypesView,
+    EventWebhookTestView,
+    TeamInviteLookupView,
     GenerateCertificatesView,
     EventCertificatesListView,
     MyCertificatesListView,
@@ -42,6 +46,7 @@ from .views import (
     BulkEventExportView,
     BulkEventImportView,
     BulkTeamImportCSVView,
+    JudgeScoresView,
 )
 from .community import (
     CommunityVoteView,
@@ -62,6 +67,7 @@ urlpatterns = [
     path('<int:pk>/', EventDetailView.as_view(), name='event_detail'),
     path('<int:pk>/teams/create/', CreateTeamView.as_view(), name='team_create'),
     path('<int:pk>/teams/join/', JoinTeamView.as_view(), name='team_join'),
+    path('<int:pk>/teams/lookup/', TeamInviteLookupView.as_view(), name='team_invite_lookup'),
     path('<int:pk>/teams/leave/', LeaveTeamView.as_view(), name='team_leave'),
     path('<int:pk>/submit/', SubmitProjectView.as_view(), name='project_submit'),
     path('<int:pk>/my-submission/', MySubmissionView.as_view(), name='my_submission'),
@@ -71,6 +77,9 @@ urlpatterns = [
     path('<int:pk>/rubrics/', EventRubricsManageView.as_view(), name='event_rubrics'),
     path('<int:pk>/rubrics/<int:rubric_pk>/', EventRubricsManageView.as_view(), name='event_rubric_detail'),
     path('<int:event_pk>/submissions/<int:sub_pk>/evaluate/', SubmitProjectEvaluationView.as_view(), name='submission_evaluate'),
+    path('<int:pk>/my-assignments/', MyAssignmentsView.as_view(), name='my_assignments'),
+    path('<int:pk>/judging/scores/', JudgeScoresView.as_view(), name='event_judge_scores'),
+    path('judging/scores/', JudgeScoresView.as_view(), name='global_judge_scores'),
     path('<int:pk>/leaderboard/', EventLeaderboardView.as_view(), name='event_leaderboard'),
     path('<int:pk>/admin/assign-judges/', AdminAssignJudgesView.as_view(), name='admin_assign_judges'),
     path('<int:pk>/admin/judging-progress/', AdminJudgingProgressView.as_view(), name='admin_judging_progress'),
@@ -106,6 +115,8 @@ urlpatterns = [
     # T4 - webhooks
     path('<int:pk>/webhooks/', EventWebhooksView.as_view(), name='event_webhooks'),
     path('<int:pk>/webhooks/<int:webhook_pk>/', EventWebhookDetailView.as_view(), name='event_webhook_detail'),
+    path('webhook-events/', WebhookEventTypesView.as_view(), name='webhook_event_types'),
+    path('<int:pk>/webhooks/<int:webhook_pk>/test/', EventWebhookTestView.as_view(), name='event_webhook_test'),
     path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/', EventWebhookDeliveriesView.as_view(), name='event_webhook_deliveries'),
     path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/<int:delivery_pk>/redeliver/', WebhookRedeliverView.as_view(), name='event_webhook_redeliver'),
 
@@ -125,4 +136,3 @@ urlpatterns = [
     path('admin/import/bulk-archive/', BulkEventImportView.as_view(), name='admin_import_bulk_archive'),
     path('<int:pk>/admin/import/teams-csv/', BulkTeamImportCSVView.as_view(), name='admin_import_teams_csv'),
 ]
-

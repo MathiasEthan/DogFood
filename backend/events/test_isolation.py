@@ -171,6 +171,17 @@ class EvaluationRuleTests(IsolationBase):
         row = next(r for r in res.data if r['submission_id'] == self.subs[0].id)
         self.assertIsNone(row['standard_error'])
 
+    def test_judge_assignment_queue(self):
+        self.client.force_authenticate(self.org)
+        self.client.post(reverse('admin_assign_judges', kwargs={'pk': self.event.pk}), {'k_per_project': 2}, format='json')
+        self.client.force_authenticate(self.j1)
+        res = self.client.get(reverse('my_assignments', kwargs={'pk': self.event.pk}))
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['assignments_exist'])
+        self.assertEqual(res.data['assigned'], JudgeAssignment.objects.filter(judge=self.j1).count())
+        self.client.force_authenticate(self.p1)
+        self.assertEqual(self.client.get(reverse('my_assignments', kwargs={'pk': self.event.pk})).status_code, 403)
+
     def test_rapid_submission_flagged_via_server_dwell_clock(self):
         JudgeAssignment.objects.create(event=self.event, judge=self.j1, submission=self.subs[0])
         self.client.force_authenticate(self.j1)
@@ -203,6 +214,11 @@ class ConflictOfInterestTests(IsolationBase):
         self.assertEqual(res.status_code, 403)
         code = self.subs[0].team.code
         res = self.client.post(reverse('team_join', kwargs={'pk': self.event.pk}), {'code': code}, format='json')
+        self.assertEqual(res.status_code, 403)
+
+    def test_organizer_cannot_join_own_event_as_participant(self):
+        self.client.force_authenticate(self.org)
+        res = self.client.post(reverse('team_create', kwargs={'pk': self.event.pk}), {'name': 'org team'}, format='json')
         self.assertEqual(res.status_code, 403)
 
     def test_team_member_cannot_be_appointed_judge(self):

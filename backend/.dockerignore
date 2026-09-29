@@ -1,0 +1,15 @@
+.dogfood
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.sqlite3
+db.sqlite3
+media/*
+!media/.gitkeep
+.git
+.gitignore

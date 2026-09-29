@@ -125,7 +125,7 @@ export function EditEventModal({
           title: r.title,
           description: r.description || "",
           weight: Number(r.weight) || 0,
-          max_score: 10,
+          max_score: Number(r.max_score) || 10,
         })),
       })
       onUpdated(updated)
@@ -284,7 +284,7 @@ export function EditEventModal({
               <div>
                 <Label className="text-xs text-foreground font-semibold flex items-center gap-1.5">
                   <Shield className="size-3.5 text-amber-400" />
-                  Judging Rubrics & Scoring Weightage (1-10 Scale)
+                  Judging Rubrics, Weights & Max Marks
                 </Label>
                 <p className="text-[11px] text-muted-foreground">
                   Define evaluation criteria and their percentage weights for judges.
@@ -352,6 +352,19 @@ export function EditEventModal({
                           required
                         />
                         <span className="text-[11px] text-muted-foreground">%</span>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={100}
+                          placeholder="Max"
+                          title="Maximum mark for this criterion"
+                          aria-label="Maximum mark"
+                          value={rubric.max_score ?? 10}
+                          onChange={(e) => handleRubricChange(idx, "max_score", Number(e.target.value))}
+                          className="h-7 w-20 text-xs font-mono"
+                          required
+                        />
+                        <span className="text-[11px] text-muted-foreground whitespace-nowrap">max</span>
                       </div>
                       <div className="sm:col-span-1 text-right">
                         <button

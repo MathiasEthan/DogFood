@@ -338,7 +338,7 @@ Registered HTTP listener endpoints receiving real-time action dispatches.
 | `event_id` | `ForeignKey(events_event)` | `ON DELETE CASCADE` | Event scope. |
 | `target_url` | `URLField(500)` | `NOT NULL` | External consumer HTTP POST target. |
 | `subscribed_events`| `JSONField` | `DEFAULT list` | Array of subscribed event strings (or `["*"]`). |
-| `secret` | `CharField(128)` | `BLANK` | HMAC-SHA256 signature secret key. |
+| `secret` | `CharField(64)` | | HMAC-SHA256 key for `X-DogFood-Signature` (shown once at creation). |
 | `is_active` | `BooleanField` | `DEFAULT TRUE` | Toggles webhook delivery without deletion. |
 
 #### `events_webhookdelivery`
@@ -368,8 +368,10 @@ Cryptographically signed achievement credentials issued to winners, participants
 | `title` | `CharField(255)` | `NOT NULL` | Certificate title (e.g. "Certificate of Excellence"). |
 | `award_title` | `CharField(255)` | `NOT NULL` | Distinction (e.g. "1st Place Winner", "Distinguished Judge"). |
 | `certificate_code`| `CharField(64)` | `UNIQUE, NOT NULL` | Public verification code (`CERT-XXXX-XXXX`). |
-| `signature` | `CharField(128)` | `NOT NULL` | HMAC-SHA256 signature over canonical payload. |
-| `issued_at` | `DateTimeField` | `AUTO_NOW_ADD` | Timestamp of cryptographic issuance. |
+| `signed_payload` | `JSONField` | | Claims frozen at issuance (what the signature covers). |
+| `signature` | `CharField(128)` | `NOT NULL` | Ed25519 signature (hex) over canonical `signed_payload`. |
+| `revoked_at` / `revocation_reason` | `DateTimeField` / `CharField` | `NULL` | Set when a re-issuance supersedes the certificate. |
+| `issued_at` | `DateTimeField` | | Timestamp of cryptographic issuance. |
 
 #### `events_judgeparticipationrecord`
 Verifiable credential attesting to an appointed judge's active evaluations and scoring telemetry.
@@ -380,9 +382,10 @@ Verifiable credential attesting to an appointed judge's active evaluations and s
 | `record_id` | `CharField(64)` | `UNIQUE, INDEX, NOT NULL` | Publicly shareable verification UUID string. |
 | `judge_id` | `ForeignKey(users_user)` | `ON DELETE CASCADE` | Appointed judge account. |
 | `event_id` | `ForeignKey(events_event)` | `ON DELETE CASCADE` | Evaluated event context. |
-| `evaluation_telemetry` | `JSONField` | `DEFAULT dict` | Scored project count, average mark, rubric counts. |
-| `canonical_digest` | `CharField(64)` | `NOT NULL` | SHA-256 hash of canonical telemetry JSON. |
-| `signature` | `CharField(128)` | `NOT NULL` | HMAC-SHA256 signature over `canonical_digest`. |
+| `evaluations_count`, `rubrics_scored_count`, `average_score_given`, `first/last_evaluation_at` | | | Scoring telemetry. |
+| `signed_payload` | `JSONField` | | Claims frozen at signing time. |
+| `canonical_digest` | `CharField(64)` | `NOT NULL` | SHA-256 of canonical `signed_payload`. |
+| `signature` | `CharField(128)` | `NOT NULL` | Ed25519 signature (hex) over canonical `signed_payload`. |
 | `issued_at` | `DateTimeField` | `AUTO_NOW_ADD` | Finalization timestamp. |
 | *Constraint* | `UNIQUE(judge_id, event_id)` | | Exactly one signed credential per judge per event. |
 

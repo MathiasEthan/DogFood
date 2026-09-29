@@ -7,7 +7,7 @@ from datetime import timedelta
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-hackathon-auth-offline-super-secret-key-12345')
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-hackathon-offline-production-key-2026')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
@@ -141,8 +141,12 @@ REST_FRAMEWORK = {
         'community_votes': os.getenv('THROTTLE_COMMUNITY_VOTES', '30/min'),
         'community_comments': os.getenv('THROTTLE_COMMUNITY_COMMENTS', '10/min'),
         'auth': os.getenv('THROTTLE_AUTH', '20/min'),
+        'team_lookup': os.getenv('THROTTLE_TEAM_LOOKUP', '30/min'),
     },
 }
+
+# SSRF guard: webhooks may only target public addresses unless explicitly allowed (local dev only).
+WEBHOOK_ALLOW_PRIVATE_TARGETS = os.getenv('WEBHOOK_ALLOW_PRIVATE_TARGETS', 'False').lower() == 'true'
 
 # Only enable behind a trusted reverse proxy; otherwise X-Forwarded-For is spoofable.
 TRUST_X_FORWARDED_FOR = os.getenv('TRUST_X_FORWARDED_FOR', 'False').lower() == 'true'
