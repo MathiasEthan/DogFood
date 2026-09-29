@@ -438,10 +438,17 @@ export default function TeamSubmissionPage({
               <div className="space-y-6">
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-border/30 pb-5">
                   <div className="space-y-1.5">
-                    <div className="inline-flex items-center gap-2 text-[10px] tracking-widest text-emerald-400 uppercase">
-                      <span className="size-1.5 rounded-full bg-emerald-400" />
-                      Submission Status: Confirmed
-                    </div>
+                    {submission.is_draft ? (
+                      <div className="inline-flex items-center gap-2 text-[10px] tracking-widest text-amber-400 uppercase">
+                        <span className="size-1.5 rounded-full bg-amber-400" />
+                        Submission Status: Draft (hidden from gallery and judges)
+                      </div>
+                    ) : (
+                      <div className="inline-flex items-center gap-2 text-[10px] tracking-widest text-emerald-400 uppercase">
+                        <span className="size-1.5 rounded-full bg-emerald-400" />
+                        Submission Status: Submitted
+                      </div>
+                    )}
                     <h2 className="text-xl sm:text-2xl font-semibold text-foreground tracking-tight">
                       {submission.title}
                     </h2>

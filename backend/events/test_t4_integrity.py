@@ -255,6 +255,23 @@ class BulkImportSafetyTests(Base):
         self.assertEqual(res.status_code, 400)
         self.assertIn('checksum', res.data['detail'])
 
+    def test_archive_survives_a_javascript_json_round_trip(self):
+        """Browsers serialize 7.0 as 7; the checksum must not depend on that."""
+        self.client.force_authenticate(self.org)
+        archive = json.loads(json.dumps(self.client.get(f'/api/events/{self.event.id}/admin/export/bulk-archive/').data, default=str))
+
+        def js_like(v):
+            if isinstance(v, float) and v.is_integer():
+                return int(v)
+            if isinstance(v, dict):
+                return {k: js_like(x) for k, x in v.items()}
+            if isinstance(v, list):
+                return [js_like(x) for x in v]
+            return v
+
+        res = self.client.post('/api/events/admin/import/bulk-archive/', js_like(archive), format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+
     def test_csv_import_enforces_conflict_of_interest_and_capacity(self):
         self.client.force_authenticate(self.org)
         csv_content = 'team_name,username,is_leader\nNew Team,fresh1,1\nNew Team,lenient,0\nNew Team,fresh2,0\nNew Team,fresh3,0\n'

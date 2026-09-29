@@ -62,7 +62,7 @@ export function EvaluateSubmissionModal({
           setFeedback(myEvalRes.evaluation.feedback || "")
         } else {
           rubricsData.forEach((r) => {
-            if (r.id) initialScores[r.id] = 7 // Default neutral starting score
+            if (r.id) initialScores[r.id] = Math.ceil((r.max_score || 10) * 0.7) // neutral starting score
           })
         }
         setScores(initialScores)
@@ -87,7 +87,8 @@ export function EvaluateSubmissionModal({
     rubrics.forEach((r) => {
       if (r.id && scores[r.id] !== undefined) {
         const weightFactor = totalConfiguredWeight > 0 ? r.weight / totalConfiguredWeight : 1 / rubrics.length
-        weightedSum += scores[r.id] * weightFactor
+        // Each mark is rescaled to /10 by the rubric's own max before weighting (same as the backend)
+        weightedSum += (scores[r.id] / (r.max_score || 10)) * 10 * weightFactor
       }
     })
     return Number(weightedSum.toFixed(2))
@@ -95,10 +96,10 @@ export function EvaluateSubmissionModal({
 
   const calculatedTotal = calculateWeightedTotal()
 
-  const handleScoreChange = (rubricId: number, val: number) => {
+  const handleScoreChange = (rubricId: number, val: number, max: number = 10) => {
     setScores((prev) => ({
       ...prev,
-      [rubricId]: Math.max(1, Math.min(10, val)),
+      [rubricId]: Math.max(1, Math.min(max, val)),
     }))
   }
 
@@ -194,9 +195,10 @@ export function EvaluateSubmissionModal({
             {/* Rubrics List */}
             <div className="space-y-4">
               {rubrics.map((r, index) => {
-                const currentScore = scores[r.id!] ?? 7
+                const maxMark = r.max_score || 10
+                const currentScore = scores[r.id!] ?? Math.ceil(maxMark * 0.7)
                 const weightRatio = totalConfiguredWeight > 0 ? r.weight / totalConfiguredWeight : 1 / rubrics.length
-                const contribution = (currentScore * weightRatio).toFixed(2)
+                const contribution = ((currentScore / maxMark) * 10 * weightRatio).toFixed(2)
 
                 return (
                   <div
@@ -234,18 +236,18 @@ export function EvaluateSubmissionModal({
                     {/* 1-10 Score Selector */}
                     <div className="space-y-1.5 pt-1">
                       <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
-                        <span>Mark (1 = Poor, 10 = Exceptional):</span>
+                        <span>Mark (1 = Poor, {maxMark} = Exceptional):</span>
                         <span className="text-xs font-bold text-foreground">
-                          {currentScore} / 10
+                          {currentScore} / {maxMark}
                         </span>
                       </div>
 
                       <div className="flex items-center gap-1 sm:gap-1.5">
-                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                        {Array.from({ length: maxMark }, (_, i) => i + 1).map((num) => (
                           <button
                             key={num}
                             type="button"
-                            onClick={() => handleScoreChange(r.id!, num)}
+                            onClick={() => handleScoreChange(r.id!, num, maxMark)}
                             className={`flex-1 h-8 rounded text-xs font-mono font-semibold transition-all cursor-pointer ${
                               currentScore === num
                                 ? "bg-amber-400 text-black shadow-md scale-105"
@@ -271,7 +273,7 @@ export function EvaluateSubmissionModal({
                     Calculated Weighted Mark
                   </div>
                   <div className="text-[10px] text-amber-400/80">
-                    Formula: Sum of (Mark × Percentage)
+                    Formula: Σ (Mark / Max × 10 × Weight share)
                   </div>
                 </div>
               </div>

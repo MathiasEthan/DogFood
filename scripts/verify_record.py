@@ -22,6 +22,17 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 
+def normalize(value):
+    # Same canonical form the platform signs: integral floats serialized as integers (7.0 -> 7)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: normalize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize(v) for v in value]
+    return value
+
+
 def fetch_json(url):
     with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310 - user-supplied verification URL
         return json.loads(resp.read().decode('utf-8'))
@@ -52,7 +63,7 @@ def main():
             sys.exit('Offline file given: pass --public-key.')
         public_key_hex = fetch_json(f'{origin}/api/signing-key/')['public_key_hex']
 
-    canonical = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    canonical = json.dumps(normalize(payload), sort_keys=True, separators=(',', ':')).encode('utf-8')
     try:
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex)).verify(bytes.fromhex(signature), canonical)
     except (InvalidSignature, ValueError):

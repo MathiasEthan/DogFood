@@ -171,6 +171,17 @@ class EvaluationRuleTests(IsolationBase):
         row = next(r for r in res.data if r['submission_id'] == self.subs[0].id)
         self.assertIsNone(row['standard_error'])
 
+    def test_judge_assignment_queue(self):
+        self.client.force_authenticate(self.org)
+        self.client.post(reverse('admin_assign_judges', kwargs={'pk': self.event.pk}), {'k_per_project': 2}, format='json')
+        self.client.force_authenticate(self.j1)
+        res = self.client.get(reverse('my_assignments', kwargs={'pk': self.event.pk}))
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['assignments_exist'])
+        self.assertEqual(res.data['assigned'], JudgeAssignment.objects.filter(judge=self.j1).count())
+        self.client.force_authenticate(self.p1)
+        self.assertEqual(self.client.get(reverse('my_assignments', kwargs={'pk': self.event.pk})).status_code, 403)
+
     def test_rapid_submission_flagged_via_server_dwell_clock(self):
         JudgeAssignment.objects.create(event=self.event, judge=self.j1, submission=self.subs[0])
         self.client.force_authenticate(self.j1)

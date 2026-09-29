@@ -715,6 +715,14 @@ export const api = {
       body: JSON.stringify({ k_per_project: k }),
     }),
 
+  getMyAssignments: (eventId: number | string) =>
+    apiRequest<{
+      assignments_exist: boolean
+      assigned: number
+      completed: number
+      items: { submission_id: number; title: string; team_name: string; status: "PENDING" | "COMPLETED" | "EXCUSED" }[]
+    }>(`/api/events/${eventId}/my-assignments/`),
+
   getJudgingProgress: (eventId: number | string) =>
     apiRequest<JudgingProgressResponse>(`/api/events/${eventId}/admin/judging-progress/`),
 

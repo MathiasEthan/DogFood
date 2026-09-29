@@ -30,9 +30,21 @@ from django.conf import settings
 SIGNATURE_ALGORITHM = 'Ed25519'
 
 
+def _normalize_numbers(value):
+    """Serialize integral floats as integers (7.0 -> 7), as JavaScript and RFC 8785 do, so a
+    browser or any other JSON stack that round-trips the document reproduces the same bytes."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _normalize_numbers(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_numbers(v) for v in value]
+    return value
+
+
 def canonical_json_bytes(data):
-    """Deterministic canonical JSON bytes (sorted keys, compact separators, UTF-8)."""
-    return json.dumps(data, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')
+    """Deterministic canonical JSON bytes (sorted keys, compact separators, UTF-8, integral floats as ints)."""
+    return json.dumps(_normalize_numbers(data), sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')
 
 
 def _to_bytes(data):

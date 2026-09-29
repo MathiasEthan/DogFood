@@ -11,6 +11,8 @@ def generate_certificate_svg(certificate):
     """
     recipient = html.escape(certificate.recipient_name)
     title = html.escape(certificate.title)
+    # Keep long titles inside the 1000px-wide frame
+    title_size = 34 if len(certificate.title) <= 36 else max(18, int(34 * 36 / len(certificate.title)))
     award = html.escape(certificate.award_title or "Official Recognition")
     event_title = html.escape(certificate.event.title)
     cert_code = html.escape(certificate.certificate_code)
@@ -64,7 +66,7 @@ def generate_certificate_svg(certificate):
 
   <!-- Header Banner -->
   <text x="500" y="110" font-family="Courier, monospace" font-size="12" fill="{accent_color}" letter-spacing="6" text-anchor="middle" font-weight="bold">OFFICIAL HACKATHON CREDENTIAL</text>
-  <text x="500" y="150" font-family="'Times New Roman', serif, Georgia" font-size="34" fill="#ffffff" letter-spacing="2" text-anchor="middle" font-weight="normal">{title.upper()}</text>
+  <text x="500" y="150" font-family="'Times New Roman', serif, Georgia" font-size="{title_size}" fill="#ffffff" letter-spacing="2" text-anchor="middle" font-weight="normal">{title.upper()}</text>
 
   <line x1="380" y1="175" x2="620" y2="175" stroke="url(#accentGrad)" stroke-width="2" />
 
@@ -167,8 +169,8 @@ def issue_event_certificates(event, issued_by=None):
         }
 
         upsert(
-            {'recipient_user': None, 'recipient_team': team, 'role': role, 'award_title': f"{award} (Team: {team.name})"},
-            {'recipient_name': f"Team {team.name}", 'title': title_text, 'metadata': metadata},
+            {'recipient_user': None, 'recipient_team': team, 'role': role, 'award_title': f"{award} ({team.name})"},
+            {'recipient_name': team.name if team.name.lower().startswith('team ') else f"Team {team.name}", 'title': title_text, 'metadata': metadata},
         )
         for member in team.memberships.select_related('user'):
             user = member.user

@@ -1055,6 +1055,37 @@ def anonymized_evaluations(evals):
     return out
 
 
+class MyAssignmentsView(APIView):
+    """GET /api/events/<id>/my-assignments/ - a judge's own queue: assigned projects and their status."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        if not event.is_judge(request.user) and not _is_platform_admin(request.user):
+            return Response({'detail': 'Only judges of this event have an assignment queue.'}, status=status.HTTP_403_FORBIDDEN)
+        rows = JudgeAssignment.objects.filter(event=event, judge=request.user).select_related('submission', 'submission__team')
+        items = [
+            {
+                'submission_id': a.submission_id,
+                'title': a.submission.title,
+                'team_name': a.submission.team.name,
+                'status': a.status,
+                'completed_at': a.completed_at,
+            }
+            for a in rows.order_by('status', 'submission__title')
+        ]
+        done = sum(1 for i in items if i['status'] == JudgeAssignment.Status.COMPLETED)
+        return Response(
+            {
+                'assignments_exist': JudgeAssignment.objects.filter(event=event).exists(),
+                'assigned': len(items),
+                'completed': done,
+                'items': items,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class EventLeaderboardView(APIView):
     """
     Judging leaderboard. Anti-anchoring: hidden from everyone (including judges) until the

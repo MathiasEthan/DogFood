@@ -508,16 +508,16 @@ export function AdminEventDashboard({
                         variant="outline"
                         className={`text-[10px] uppercase ${
                           cert.role === "winner"
-                            ? "border-amber-500/40 text-amber-300 bg-amber-950/20"
+                            ? "border-amber-500/40 text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-950/20"
                             : cert.role === "judge"
-                            ? "border-purple-500/40 text-purple-300 bg-purple-950/20"
-                            : "border-emerald-500/40 text-emerald-300 bg-emerald-950/20"
+                            ? "border-purple-500/40 text-purple-700 bg-purple-50 dark:text-purple-300 dark:bg-purple-950/20"
+                            : "border-emerald-500/40 text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-950/20"
                         }`}
                       >
                         {cert.role}
                       </Badge>
                       {cert.status && cert.status !== "valid" && (
-                        <Badge variant="outline" className="ml-1 text-[10px] uppercase border-red-500/40 text-red-300">
+                        <Badge variant="outline" className="ml-1 text-[10px] uppercase border-red-500/40 text-red-600 dark:text-red-300">
                           {cert.status}
                         </Badge>
                       )}

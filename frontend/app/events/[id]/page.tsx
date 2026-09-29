@@ -10,6 +10,7 @@ import { AdminEventDashboard } from "@/components/admin-event-dashboard"
 import { JudgeAppointmentCombobox } from "@/components/judge-appointment-combobox"
 import { EditEventModal } from "@/components/edit-event-modal"
 import { CommunityVotingPanel } from "@/components/community-voting-panel"
+import { JudgingProgressPanel } from "@/components/judging-progress-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -1052,7 +1053,7 @@ export default function EventDetailPage({
                             Total Weight: {totalRubricWeight}%
                           </Badge>
                           <Badge variant="outline" className="font-mono text-[10px] text-primary border-primary/30 bg-primary/10">
-                            1–10 Scale per Rubric
+                            Max mark set per rubric
                           </Badge>
                         </div>
                       )}
@@ -1085,7 +1086,7 @@ export default function EventDetailPage({
                                 )}
                               </div>
                               <div className="pt-2 border-t border-border/20 flex items-center justify-between text-[10px] font-mono text-muted-foreground">
-                                <span>Max mark: 10</span>
+                                <span>Max mark: {rubric.max_score ?? 10}</span>
                                 <span className="text-foreground/70">
                                   Weight: {rubric.weight}%
                                 </span>
@@ -1101,7 +1102,7 @@ export default function EventDetailPage({
                               FORMULA
                             </span>
                             <span className="text-foreground/80 font-mono text-[11px]">
-                              Total Score = &Sigma; (Score &times; Weight / 100) &bull; Range: 0.0 – 10.0
+                              Total = &Sigma; (Mark / Max &times; 10 &times; Weight share) &bull; Range: 1.0 – 10.0 &bull; then normalized across judges
                             </span>
                           </div>
                           {(isReviewer || isJudge) && (
@@ -1526,6 +1527,7 @@ export default function EventDetailPage({
               </div>
             </Link>
           )}
+          {event && isCreatorOrAdmin && <JudgingProgressPanel event={event} onUpdated={fetchEvent} />}
           {event && isCreatorOrAdmin && <CommunityVotingPanel event={event} onUpdated={fetchEvent} />}
 
           {/* 3. ADMIN MANAGEMENT */}
