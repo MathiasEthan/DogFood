@@ -150,9 +150,34 @@ Voting rules (window, votes per user, eligibility, self-voting, live counts, com
 | `/api/auth/api-keys/` | GET / POST | Authenticated | List your own API keys (masked); mint a new one. The raw key is only ever returned in full on this `POST`. |
 | `/api/auth/api-keys/<kid>/` | PATCH / DELETE | Owner | Pause (`is_active`) or permanently revoke a key. |
 
-Webhooks fire a signed `POST` for `team.created`, `submission.created`, `submission.updated`, `evaluation.submitted`, `results.published`, `vote.cast` and `comment.posted`. Every delivery includes an `X-DogFood-Signature: sha256=<hmac>` header — an HMAC-SHA256 of the exact request body, keyed by that endpoint's own secret — so the receiver can verify it actually came from this platform. There's no background worker in this stack, so delivery is synchronous and best-effort; failures are logged and can be redelivered by hand.
+Webhooks fire signed `POST` deliveries for every UI action, including `team.created`, `team.joined`, `team.left`, `rubrics.updated`, `judges.assigned`, `submission.created`, `submission.updated`, `evaluation.submitted`, `results.published`, `vote.cast`, `vote.voided`, `comment.posted`, `comment.moderated`, `certificates.issued`, `event.exported`, and `event.imported`. Every delivery includes an `X-DogFood-Signature: sha256=<hmac>` header — an HMAC-SHA256 of the exact request body, keyed by that endpoint's secret. Delivery is synchronous and logged in the webhook delivery audit trail.
 
-API keys let an external tool call this REST API without a browser session: send `Authorization: ApiKey <key>` instead of relying on the login cookies. A key grants exactly the same permissions its owner already has everywhere else in the app — an organizer's key manages their events, nothing more.
+API keys let an external tool call this REST API without a browser session: send `Authorization: ApiKey <key>` instead of relying on login cookies. A key grants the same permissions its owner has throughout the app.
+
+---
+
+## 🏆 T4 Stretch: Certificates, Records, Embeds & Portability
+
+DogFood includes complete platform extensibility and zero lock-in:
+
+1. **Certificate Generation & Verification**:
+   - **Vector SVG Generation**: Standalone vector certificates with gold seals, ornate guilloche borders, and cryptographic HMAC-SHA256 verification codes.
+   - **Public Verification**: `/certificates/<certificate_code>/` displays public authenticity proofs without requiring authentication.
+   - **Direct Download**: `/api/certificates/<code>/download/` generates high-resolution standalone SVGs.
+
+2. **Signed Judge Participation Records**:
+   - Every appointed judge receives a cryptographically signed participation record documenting their reviews, scored rubrics count, average marks awarded, and evaluation timeline.
+   - Publicly verifiable at `/verify/judge/<record_id>/` and via API `/api/judges/records/<record_id>/verify/` with canonical SHA-256 payload digest and HMAC signature.
+
+3. **Embeddable Gallery Widget**:
+   - Lightweight, responsive, headless showcase at `/embed/events/<id>/gallery/`.
+   - Embeddable via standard `<iframe>` tags into any website, blog, or community hub.
+   - Auto-resizing iframe protocol supported via `postMessage`: `{ type: 'dogfood:embed:resize', height }`.
+
+4. **Zero-Lock-In Bulk Import & Export**:
+   - **Full Event Archive**: `/api/events/<id>/admin/export/bulk-archive/` provides a complete, lossless JSON backup of event metadata, rubrics, teams, submissions, evaluations, votes, and comments with an SHA-256 integrity checksum.
+   - **Recreate / Clone Event**: `/api/events/admin/import/bulk-archive/` reconstructs an entire event and all relations from an exported JSON bundle.
+   - **Bulk Team CSV Import**: `/api/events/<id>/admin/import/teams-csv/` batch imports teams and team members from CSV (`team_name,username,email,is_leader`).
 
 ---
 
@@ -177,3 +202,4 @@ npm run build
 - If `DB_HOST` isn't set, the backend uses SQLite instead of PostgreSQL.
 - Rate limits are configurable via `THROTTLE_COMMUNITY_VOTES`, `THROTTLE_COMMUNITY_COMMENTS` and `THROTTLE_AUTH` (defaults `30/min`, `10/min`, `20/min`).
 - Only set `TRUST_X_FORWARDED_FOR=True` when running behind a trusted reverse proxy.
+

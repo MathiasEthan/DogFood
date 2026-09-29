@@ -528,12 +528,21 @@ class WebhookEndpoint(models.Model):
 
     class EventType(models.TextChoices):
         TEAM_CREATED = 'team.created', 'Team created'
+        TEAM_JOINED = 'team.joined', 'Team joined'
+        TEAM_LEFT = 'team.left', 'Team left'
         SUBMISSION_CREATED = 'submission.created', 'Submission created'
         SUBMISSION_UPDATED = 'submission.updated', 'Submission updated'
+        RUBRICS_UPDATED = 'rubrics.updated', 'Rubrics updated'
+        JUDGES_ASSIGNED = 'judges.assigned', 'Judges assigned'
         EVALUATION_SUBMITTED = 'evaluation.submitted', 'Evaluation submitted'
         RESULTS_PUBLISHED = 'results.published', 'Results published'
         VOTE_CAST = 'vote.cast', 'Community vote cast'
+        VOTE_VOIDED = 'vote.voided', 'Community vote voided'
         COMMENT_POSTED = 'comment.posted', 'Comment posted'
+        COMMENT_MODERATED = 'comment.moderated', 'Comment moderated'
+        CERTIFICATES_ISSUED = 'certificates.issued', 'Certificates issued'
+        EVENT_EXPORTED = 'event.exported', 'Event exported'
+        EVENT_IMPORTED = 'event.imported', 'Event imported'
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='webhook_endpoints')
     target_url = models.URLField(max_length=500, help_text="Where we POST the event payload")
@@ -588,3 +597,139 @@ class WebhookDelivery(models.Model):
 
     def __str__(self):
         return f"Delivery [{self.status}] {self.event_type} -> {self.endpoint.target_url}"
+
+
+class Certificate(models.Model):
+    """
+    Issued verifiable credentials for participants, winners, judges, and organizers.
+    Includes a unique verification code and HMAC-SHA256 signature for tamper-proof public verification.
+    """
+
+    class Role(models.TextChoices):
+        PARTICIPANT = 'participant', 'Participant'
+        WINNER = 'winner', 'Winner'
+        JUDGE = 'judge', 'Judge'
+        ORGANIZER = 'organizer', 'Organizer'
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='certificates')
+    recipient_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='certificates',
+    )
+    recipient_team = models.ForeignKey(
+        Team,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='certificates',
+    )
+    recipient_name = models.CharField(max_length=200)
+    recipient_email = models.CharField(max_length=255, blank=True, default='')
+    role = models.CharField(max_length=30, choices=Role.choices, default=Role.PARTICIPANT)
+    title = models.CharField(max_length=200, help_text="e.g. Certificate of Participation, 1st Place Winner")
+    award_title = models.CharField(max_length=200, blank=True, default='')
+    certificate_code = models.CharField(max_length=64, unique=True, db_index=True)
+    issued_at = models.DateTimeField(default=timezone.now)
+    metadata = models.JSONField(default=dict, blank=True)
+    signature = models.CharField(max_length=128, blank=True, default='')
+
+    class Meta:
+        ordering = ['-issued_at']
+        unique_together = [('event', 'recipient_user', 'role', 'award_title')]
+
+    def save(self, *args, **kwargs):
+        if not self.certificate_code:
+            self.certificate_code = f"CERT-{self.event_id}-{secrets.token_hex(6).upper()}"
+        if not self.signature:
+            from .signing import sign_data
+            payload = {
+                'code': self.certificate_code,
+                'event_id': self.event_id,
+                'event_title': self.event.title,
+                'recipient': self.recipient_name,
+                'role': self.role,
+                'award': self.award_title,
+                'issued_at': self.issued_at.isoformat() if self.issued_at else '',
+            }
+            self.signature = sign_data(payload)
+        super().save(*args, **kwargs)
+
+    def is_valid_signature(self):
+        from .signing import verify_signature
+        payload = {
+            'code': self.certificate_code,
+            'event_id': self.event_id,
+            'event_title': self.event.title,
+            'recipient': self.recipient_name,
+            'role': self.role,
+            'award': self.award_title,
+            'issued_at': self.issued_at.isoformat() if self.issued_at else '',
+        }
+        return verify_signature(payload, self.signature)
+
+    def __str__(self):
+        return f"{self.title} -> {self.recipient_name} ({self.certificate_code})"
+
+
+class JudgeParticipationRecord(models.Model):
+    """
+    Cryptographically signed, publicly verifiable judge participation record.
+    Summarizes the judge's scoring workload, timestamps, and evaluation commitment.
+    """
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='judge_records')
+    judge = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='judge_participation_records',
+    )
+    record_id = models.CharField(max_length=64, unique=True, db_index=True)
+    evaluations_count = models.PositiveIntegerField(default=0)
+    rubrics_scored_count = models.PositiveIntegerField(default=0)
+    first_evaluation_at = models.DateTimeField(null=True, blank=True)
+    last_evaluation_at = models.DateTimeField(null=True, blank=True)
+    canonical_digest = models.CharField(max_length=64, blank=True, default='')
+    signature = models.CharField(max_length=128, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = [('event', 'judge')]
+
+    def build_canonical_payload(self):
+        return {
+            'record_id': self.record_id,
+            'event_id': self.event_id,
+            'event_title': self.event.title,
+            'event_start': self.event.start_date.isoformat() if self.event.start_date else '',
+            'event_end': self.event.end_date.isoformat() if self.event.end_date else '',
+            'judge_id': self.judge_id,
+            'judge_username': self.judge.username,
+            'judge_name': f"{self.judge.first_name} {self.judge.last_name}".strip() or self.judge.username,
+            'evaluations_count': self.evaluations_count,
+            'rubrics_scored_count': self.rubrics_scored_count,
+            'first_evaluation_at': self.first_evaluation_at.isoformat() if self.first_evaluation_at else '',
+            'last_evaluation_at': self.last_evaluation_at.isoformat() if self.last_evaluation_at else '',
+        }
+
+    def sign_and_save(self, *args, **kwargs):
+        from .signing import compute_digest, sign_data
+        if not self.record_id:
+            self.record_id = f"JPR-{self.event_id}-{self.judge_id}-{secrets.token_hex(4).upper()}"
+        payload = self.build_canonical_payload()
+        self.canonical_digest = compute_digest(payload)
+        self.signature = sign_data(payload)
+        self.save(*args, **kwargs)
+
+    def is_valid_signature(self):
+        from .signing import compute_digest, verify_signature
+        payload = self.build_canonical_payload()
+        if compute_digest(payload) != self.canonical_digest:
+            return False
+        return verify_signature(payload, self.signature)
+
+    def __str__(self):
+        return f"JudgeRecord {self.record_id} ({self.judge.username} @ {self.event.title})"
+

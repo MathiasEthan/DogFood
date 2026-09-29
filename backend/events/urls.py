@@ -32,6 +32,16 @@ from .views import (
     EventWebhookDetailView,
     EventWebhookDeliveriesView,
     WebhookRedeliverView,
+    GenerateCertificatesView,
+    EventCertificatesListView,
+    MyCertificatesListView,
+    PublicCertificateDetailView,
+    DownloadCertificateSVGView,
+    PublicJudgeRecordVerifyView,
+    MyJudgeRecordView,
+    BulkEventExportView,
+    BulkEventImportView,
+    BulkTeamImportCSVView,
 )
 from .community import (
     CommunityVoteView,
@@ -98,5 +108,21 @@ urlpatterns = [
     path('<int:pk>/webhooks/<int:webhook_pk>/', EventWebhookDetailView.as_view(), name='event_webhook_detail'),
     path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/', EventWebhookDeliveriesView.as_view(), name='event_webhook_deliveries'),
     path('<int:pk>/webhooks/<int:webhook_pk>/deliveries/<int:delivery_pk>/redeliver/', WebhookRedeliverView.as_view(), name='event_webhook_redeliver'),
+
+    # T4 Stretch - Certificates & Verification
+    path('<int:pk>/admin/certificates/generate/', GenerateCertificatesView.as_view(), name='event_certificates_generate'),
+    path('<int:pk>/certificates/', EventCertificatesListView.as_view(), name='event_certificates_list'),
+    path('<int:pk>/my-certificates/', MyCertificatesListView.as_view(), name='my_certificates_list'),
+    path('certificates/<str:code>/', PublicCertificateDetailView.as_view(), name='public_certificate_detail'),
+    path('certificates/<str:code>/download/', DownloadCertificateSVGView.as_view(), name='download_certificate_svg'),
+
+    # T4 Stretch - Signed Judge Participation Records
+    path('<int:pk>/my-judge-record/', MyJudgeRecordView.as_view(), name='my_judge_record'),
+    path('judges/records/<str:record_id>/verify/', PublicJudgeRecordVerifyView.as_view(), name='public_judge_record_verify'),
+
+    # T4 Stretch - Bulk Import & Export (Portability)
+    path('<int:pk>/admin/export/bulk-archive/', BulkEventExportView.as_view(), name='admin_export_bulk_archive'),
+    path('admin/import/bulk-archive/', BulkEventImportView.as_view(), name='admin_import_bulk_archive'),
+    path('<int:pk>/admin/import/teams-csv/', BulkTeamImportCSVView.as_view(), name='admin_import_teams_csv'),
 ]
 

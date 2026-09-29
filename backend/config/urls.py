@@ -3,10 +3,19 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from events.views import (
+    PublicCertificateDetailView,
+    DownloadCertificateSVGView,
+    PublicJudgeRecordVerifyView,
+)
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('users.urls')),
     path('api/events/', include('events.urls')),
+    path('api/certificates/<str:code>/', PublicCertificateDetailView.as_view(), name='root_public_certificate_detail'),
+    path('api/certificates/<str:code>/download/', DownloadCertificateSVGView.as_view(), name='root_download_certificate_svg'),
+    path('api/judges/records/<str:record_id>/verify/', PublicJudgeRecordVerifyView.as_view(), name='root_public_judge_record_verify'),
 ]
 
 if settings.MEDIA_URL:
